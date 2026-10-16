@@ -1,0 +1,28 @@
+# Aldwin configuration (~/.aldwin/config.yaml)
+# API keys live separately in ~/.aldwin/secrets.yaml (or environment variables).
+
+# Default OpenAI chat model (change any time in chat with /model)
+model: gpt-4o
+
+# Terminal display theme: "default" or "plain"
+theme: default
+
+# Context and turn limits
+limits:
+  # Number of recent user/assistant exchanges sent to the model
+  context_exchanges: 20
+
+  # Maximum characters read from memory/profile.md
+  profile_chars: 4000
+
+  # Maximum characters read from recent daily notes
+  notes_chars: 4000
+
+  # Number of days of daily notes included in the prompt
+  notes_days: 7
+
+  # Maximum characters read from persona.md
+  persona_chars: 2000
+
+  # Maximum agent steps per turn before asking to continue
+  max_steps: 15
