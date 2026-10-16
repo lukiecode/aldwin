@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -92,11 +93,12 @@ def test_cli_help_lists_commands_and_options() -> None:
     """TC-28: aldwin --help lists commands and options."""
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "--version" in result.output
-    assert "--plain" in result.output
-    assert "--debug" in result.output
-    assert "setup" in result.output
-    assert "uninstall" in result.output
+    plain_output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--version" in plain_output
+    assert "--plain" in plain_output
+    assert "--debug" in plain_output
+    assert "setup" in plain_output
+    assert "uninstall" in plain_output
 
 
 def test_cli_windows_exits_with_friendly_message(
