@@ -58,40 +58,6 @@ def format_home_path(path: Path) -> str:
     return f"~/{rel}"
 
 
-def atomic_write(path: Path, content: str | bytes, *, mode: int = FILE_MODE) -> None:
-    """Atomically write ``content`` to ``path`` and set file permissions to ``mode``.
-
-    Writes to a temporary file in the same directory, flushes and fsyncs to
-    disk, sets permissions, and replaces the target with ``os.replace``. If any
-    step fails, the temporary file is removed and the original target is left
-    untouched.
-    """
-    data = content.encode("utf-8") if isinstance(content, str) else content
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True, mode=DIR_MODE)
-
-    tmp_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="wb",
-            dir=parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as tmp_file:
-            tmp_path = Path(tmp_file.name)
-            tmp_file.write(data)
-            tmp_file.flush()
-            os.fsync(tmp_file.fileno())
-
-        os.chmod(tmp_path, mode)
-        os.replace(tmp_path, path)
-    except BaseException:
-        if tmp_path is not None:
-            tmp_path.unlink(missing_ok=True)
-        raise
-
-
 def ensure_permissions(path: Path, expected_mode: int) -> bool:
     """Ensure ``path`` does not have looser permissions than ``expected_mode``.
 
@@ -120,6 +86,40 @@ def _ensure_dir(path: Path) -> None:
         ensure_permissions(path, DIR_MODE)
     else:
         os.chmod(path, DIR_MODE)
+
+
+def atomic_write(path: Path, content: str | bytes, *, mode: int = FILE_MODE) -> None:
+    """Atomically write ``content`` to ``path`` and set file permissions to ``mode``.
+
+    Writes to a temporary file in the same directory, flushes and fsyncs to
+    disk, sets permissions, and replaces the target with ``os.replace``. If any
+    step fails, the temporary file is removed and the original target is left
+    untouched.
+    """
+    data = content.encode("utf-8") if isinstance(content, str) else content
+    parent = path.parent
+    _ensure_dir(parent)
+
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            dir=parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+            tmp_file.write(data)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    except BaseException:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def ensure_home(home: Path | None = None) -> bool:

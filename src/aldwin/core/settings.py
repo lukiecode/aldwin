@@ -75,7 +75,7 @@ class LimitsConfig(BaseModel):
 class AldwinConfig(BaseModel):
     """Top-level user configuration from ``~/.aldwin/config.yaml``."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
     model: str = Field(default="gpt-4o", min_length=1)
     theme: Literal["default", "plain"] = "default"
@@ -261,6 +261,8 @@ def load_config(home: Path | None = None) -> AldwinConfig:
         )
 
     _warn_unknown_config_keys(parsed, config_path)
+    if "limits" in parsed and parsed["limits"] is None:
+        parsed = {**parsed, "limits": {}}
 
     try:
         return AldwinConfig.model_validate(parsed)

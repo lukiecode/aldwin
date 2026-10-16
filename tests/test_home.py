@@ -80,6 +80,7 @@ def test_atomic_write_writes_text_and_bytes_with_mode(aldwin_home: Path) -> None
     text_target = aldwin_home / "config.yaml"
     atomic_write(text_target, "model: gpt-4o\n", mode=0o600)
 
+    assert (aldwin_home.stat().st_mode & 0o777) == 0o700
     assert text_target.read_text(encoding="utf-8") == "model: gpt-4o\n"
     assert (text_target.stat().st_mode & 0o777) == 0o600
 

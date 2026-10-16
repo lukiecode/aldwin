@@ -121,6 +121,7 @@ def test_load_config_malformed_yaml_or_non_dict_raises_config_error(
         ("limits:\n  profile_chars: 99\n", "limits.profile_chars", "integer >= 100"),
         ("theme: neon\n", "theme", "'default' or 'plain'"),
         ("limits: true\n", "limits", "mapping of limit settings"),
+        ('model: "   "\n', "model", "non-empty string"),
     ],
 )
 def test_load_config_rejects_out_of_range_limits_and_bad_theme(
@@ -129,7 +130,7 @@ def test_load_config_rejects_out_of_range_limits_and_bad_theme(
     expected_field: str,
     expected_type: str,
 ) -> None:
-    """TC-20: Boundary validation on LimitsConfig and theme."""
+    """TC-20: Boundary validation on LimitsConfig, model, and theme."""
     config_path = aldwin_home / "config.yaml"
     atomic_write(config_path, yaml_text)
 
@@ -139,6 +140,15 @@ def test_load_config_rejects_out_of_range_limits_and_bad_theme(
     message = str(exc_info.value)
     assert expected_field in message
     assert expected_type in message
+
+
+def test_load_config_empty_limits_section_uses_defaults(aldwin_home: Path) -> None:
+    """An empty `limits:` key in config.yaml falls back to default LimitsConfig."""
+    config_path = aldwin_home / "config.yaml"
+    atomic_write(config_path, "model: gpt-4o\nlimits:\n  # all limits commented out\n")
+
+    cfg = load_config(aldwin_home)
+    assert cfg.limits == LimitsConfig()
 
 
 def test_update_config_model_preserves_comments(aldwin_home: Path) -> None:
