@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,10 @@ def test_starter_assets_are_valid(aldwin_home: Path) -> None:
     assert skill.name == "using-aldwin"
     assert "Aldwin" in skill.instructions
 
+    profile_raw = (aldwin_home / "memory" / "profile.md").read_text(encoding="utf-8")
+    stripped_profile = re.sub(r"<!--.*?-->", "", profile_raw, flags=re.DOTALL).strip()
+    assert stripped_profile == ""
+
 
 def test_load_config_empty_or_comments_only(aldwin_home: Path) -> None:
     """TC-18: Empty or comment-only config.yaml returns defaults."""
@@ -75,6 +80,7 @@ def test_load_config_invalid_value_raises_config_error(aldwin_home: Path) -> Non
     assert str(config_path) in message
     assert "limits.max_steps" in message
     assert "integer >= 1" in message
+    assert "restore defaults" in message
 
 
 def test_load_config_unknown_keys_logged_and_ignored(

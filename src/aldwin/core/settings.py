@@ -55,7 +55,8 @@ class ConfigError(Exception):
         self.detail = detail
         suffix = f" ({detail})" if detail else ""
         super().__init__(
-            f"Invalid configuration in {file}: '{field}' must be {expected}{suffix}."
+            f"Invalid configuration in {file}: '{field}' must be {expected}{suffix}. "
+            f"Fix the value in {file.name}, or delete the file to restore defaults."
         )
 
 

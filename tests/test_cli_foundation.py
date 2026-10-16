@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from aldwin import __version__
 from aldwin.cli.main import app
+from aldwin.client import bootstrap
 from aldwin.core.home import STARTER_ASSETS, SUBDIRS, atomic_write
 
 runner = CliRunner()
@@ -121,3 +122,33 @@ def test_cli_subcommands_stub_output() -> None:
 
     uninstall_res = runner.invoke(app, ["uninstall", "--purge"])
     assert uninstall_res.exit_code == 0
+
+
+def test_cli_default_home_prints_tilde_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First run under default ~/.aldwin prints 'Created ~/.aldwin'."""
+    fake_user_home = tmp_path / "user"
+    fake_user_home.mkdir()
+    monkeypatch.delenv("ALDWIN_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(fake_user_home))
+
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    assert "Created ~/.aldwin\n" in result.output
+
+
+def test_bootstrap_resolves_plain_mode_from_flag_env_and_config(
+    aldwin_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bootstrap() sets plain=True from --plain, NO_COLOR, or theme: plain."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    assert bootstrap(plain=False).plain is False
+    assert bootstrap(plain=True).plain is True
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert bootstrap(plain=False).plain is True
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    atomic_write(aldwin_home / "config.yaml", "theme: plain\n")
+    assert bootstrap(plain=False).plain is True

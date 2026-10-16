@@ -49,12 +49,12 @@ def main(
     ),
 ) -> None:
     """Launch Aldwin interactive chat (or run a subcommand)."""
-    _ = (version, plain)
+    _ = version
     if ctx.invoked_subcommand is not None:
         return
 
     try:
-        result = bootstrap(debug=debug)
+        result = bootstrap(plain=plain, debug=debug)
     except (PlatformNotSupportedError, ClientBootstrapError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None

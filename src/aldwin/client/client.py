@@ -10,9 +10,9 @@ from aldwin.host.in_process import (
 )
 
 
-def bootstrap(*, debug: bool = False) -> BootstrapResult:
+def bootstrap(*, plain: bool = False, debug: bool = False) -> BootstrapResult:
     """Initialise the Aldwin host and return startup metadata for the door."""
-    return bootstrap_host(debug=debug)
+    return bootstrap_host(plain=plain, debug=debug)
 
 
 __all__ = [
