@@ -17,17 +17,17 @@ Aldwin is a personal assistant that runs on your computer and stores all data lo
 
 ## Memory and persona
 
-- `memory/profile.md`: Edited only by the user; always included in context (up to 4,000 characters).
-- `memory/notes/YYYY-MM-DD.md`: Daily notes appended by `remember`; the last 7 days are included in context (up to 4,000 characters), and older notes remain searchable via `recall`.
-- `persona.md`: Controls how Aldwin communicates; updated only by the user or after `y/n` approval.
+- `memory/profile.md`: Edited only by the user and included in every conversation (up to 4,000 characters).
+- `memory/notes/YYYY-MM-DD.md`: Daily notes appended by `remember`. The last 7 days are included in the prompt (up to 4,000 characters), and older notes remain searchable via `recall`.
+- `persona.md`: Controls how Aldwin communicates, updated only by the user or after `y/n` approval.
 
 ## Slash commands
 
-- `/help` — Show available slash commands and keyboard shortcuts.
-- `/new` — Start a fresh conversation (previous conversations stay in `sessions/`).
-- `/model` — Switch the active OpenAI chat model.
-- `/persona` — View the current persona.
-- `/memory` — View profile status and recent daily notes.
-- `/skills` — List installed skills in `skills/`.
-- `/tools` — List the built-in tools.
-- `/exit` — Save and quit Aldwin.
+- `/help`: Show available slash commands and keyboard shortcuts.
+- `/new`: Start a fresh conversation (previous conversations stay in `sessions/`).
+- `/model`: Switch the active OpenAI chat model.
+- `/persona`: View the current persona.
+- `/memory`: View profile status and recent daily notes.
+- `/skills`: List installed skills in `skills/`.
+- `/tools`: List the built-in tools.
+- `/exit`: Save and quit Aldwin.
