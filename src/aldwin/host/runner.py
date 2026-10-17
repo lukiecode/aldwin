@@ -1,0 +1,619 @@
+"""Turn runner, request scope, approval broker, and host loop for Aldwin."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from collections.abc import Awaitable, Callable, Sequence
+from types import TracebackType
+from typing import Any
+from uuid import uuid4
+
+import openai
+from agentling import (
+    Agent,
+    AgentSession,
+    FinalEvent,
+    OpenAIModel,
+    StepEvent,
+    TextDelta,
+)
+from agentling import (
+    ToolCallEvent as AgentlingToolCallEvent,
+)
+from agentling import (
+    ToolResultEvent as AgentlingToolResultEvent,
+)
+from agentling.errors import ModelError
+from agentling.memory import FinalStep, Memory
+from agentling.models import Usage
+
+from aldwin.core.settings import load_config, resolve_key, update_config_model
+from aldwin.host.in_process import InProcessTransport
+from aldwin.host.sessions import (
+    MAX_PREVIEW_CHARS,
+    SessionStore,
+    StoredSession,
+    shorten_one_line,
+)
+from aldwin.protocol import (
+    PROTOCOL_VERSION,
+    ApprovalAnswer,
+    ApprovalEvent,
+    ApproveRequest,
+    DoneEvent,
+    DoneReason,
+    ErrorCode,
+    ErrorEvent,
+    Event,
+    HelloRequest,
+    HistoryEvent,
+    HistoryRequest,
+    Request,
+    SetModelRequest,
+    StopRequest,
+    TextEvent,
+    TokenUsage,
+    ToolCallEvent,
+    ToolResultEvent,
+    TurnRequest,
+)
+
+logger = logging.getLogger("aldwin.host.runner")
+
+AskFn = Callable[[str, str], Awaitable[bool]]
+AgentBuilder = Callable[[str, AskFn], Agent]
+EventSender = Callable[[Event], Awaitable[None]]
+
+
+def format_args_preview(arguments: dict[str, Any]) -> str:
+    """Format tool call arguments as a single line capped at 120 characters."""
+    if not arguments:
+        return ""
+    raw = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+    return shorten_one_line(raw, MAX_PREVIEW_CHARS)
+
+
+def format_tool_summary(content: str) -> str:
+    """Format the first non-empty line of tool output capped at 120 characters."""
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return shorten_one_line(stripped, MAX_PREVIEW_CHARS)
+    return ""
+
+
+def _to_token_usage(usage: Usage | None) -> TokenUsage | None:
+    """Convert Agentling `Usage` to protocol `TokenUsage`."""
+    if usage is None:
+        return None
+    return TokenUsage(
+        input_tokens=max(0, usage.input_tokens),
+        output_tokens=max(0, usage.output_tokens),
+    )
+
+
+def classify_turn_error(exc: BaseException) -> tuple[ErrorCode, str]:
+    """Map an Agentling or OpenAI exception to a protocol `(ErrorCode, message)`."""
+    if isinstance(exc, (openai.AuthenticationError, openai.PermissionDeniedError)):
+        return (
+            "auth_failed",
+            "Your OpenAI key was rejected. Run `aldwin setup` to update it.",
+        )
+    if isinstance(exc, openai.RateLimitError):
+        return (
+            "rate_limited",
+            "OpenAI rate limit reached. Wait a moment and try again.",
+        )
+    if isinstance(
+        exc,
+        (
+            openai.APIConnectionError,
+            openai.APITimeoutError,
+            openai.InternalServerError,
+            openai.APIStatusError,
+            ModelError,
+        ),
+    ):
+        text = str(exc).lower()
+        if "401" in text or "authentication" in text or "api key" in text:
+            return (
+                "auth_failed",
+                "Your OpenAI key was rejected. Run `aldwin setup` to update it.",
+            )
+        if "429" in text or "rate limit" in text:
+            return (
+                "rate_limited",
+                "OpenAI rate limit reached. Wait a moment and try again.",
+            )
+        return (
+            "model_unavailable",
+            "OpenAI could not be reached right now. Check your connection and retry.",
+        )
+    return (
+        "internal",
+        "Something went wrong. Details are in ~/.aldwin/logs/aldwin.log.",
+    )
+
+
+class RequestScope:
+    """Enforces that every request `id` receives exactly one terminal event."""
+
+    def __init__(self, req_id: str, send_event: EventSender) -> None:
+        self.req_id = req_id
+        self._send_event = send_event
+        self._terminated = False
+
+    @property
+    def terminated(self) -> bool:
+        """Return `True` once `done()` or `error()` has been emitted."""
+        return self._terminated
+
+    async def emit(self, event: Event) -> None:
+        """Emit a non-terminal event carrying `re == self.req_id`."""
+        if self._terminated:
+            raise RuntimeError(
+                f"Cannot emit {event.kind!r} after terminal event for {self.req_id!r}."
+            )
+        if isinstance(event, (DoneEvent, ErrorEvent)):
+            raise RuntimeError("Use `done()` or `error()` for terminal events.")
+        if event.re != self.req_id:
+            raise ValueError(
+                f"Event `re` ({event.re!r}) must match request id ({self.req_id!r})."
+            )
+        await self._send_event(event)
+
+    async def done(
+        self,
+        reason: DoneReason,
+        usage: TokenUsage | None = None,
+    ) -> None:
+        """Emit the single terminal `DoneEvent` for this request."""
+        if self._terminated:
+            raise RuntimeError(
+                f"Terminal event already emitted for request {self.req_id!r}."
+            )
+        self._terminated = True
+        await self._send_event(DoneEvent(re=self.req_id, reason=reason, usage=usage))
+
+    async def error(self, code: ErrorCode, message: str) -> None:
+        """Emit the single terminal `ErrorEvent` for this request."""
+        if self._terminated:
+            raise RuntimeError(
+                f"Terminal event already emitted for request {self.req_id!r}."
+            )
+        self._terminated = True
+        await self._send_event(ErrorEvent(re=self.req_id, code=code, message=message))
+
+    async def __aenter__(self) -> RequestScope:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool:
+        if exc is not None:
+            if isinstance(exc, asyncio.CancelledError):
+                return False
+            logger.exception("Unhandled error in request %s", self.req_id, exc_info=exc)
+            if not self._terminated:
+                await self.error(
+                    "internal",
+                    "Something went wrong. Details are in ~/.aldwin/logs/aldwin.log.",
+                )
+            return True
+        if not self._terminated:
+            raise RuntimeError(
+                f"Request {self.req_id!r} exited without emitting a terminal event."
+            )
+        return False
+
+
+class ApprovalBroker:
+    """Tracks pending `asyncio.Future` objects for tool/persona approvals."""
+
+    def __init__(self, send_event: EventSender) -> None:
+        self._send_event = send_event
+        self._pending: dict[str, asyncio.Future[bool]] = {}
+
+    @property
+    def has_pending(self) -> bool:
+        """Return `True` if at least one approval is waiting for an answer."""
+        return bool(self._pending)
+
+    async def ask(self, re: str, summary: str, detail: str = "") -> bool:
+        """Emit `ApprovalEvent` and await the door's `yes`/`no` answer."""
+        approval_id = f"ap_{uuid4().hex[:12]}"
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[bool] = loop.create_future()
+        self._pending[approval_id] = future
+        try:
+            await self._send_event(
+                ApprovalEvent(
+                    re=re,
+                    approval_id=approval_id,
+                    summary=summary,
+                    detail=detail,
+                )
+            )
+            return await future
+        finally:
+            self._pending.pop(approval_id, None)
+
+    def resolve(self, approval_id: str, answer: ApprovalAnswer) -> bool:
+        """Resolve a pending approval future; return `False` if unknown."""
+        future = self._pending.pop(approval_id, None)
+        if future is None or future.done():
+            return False
+        future.set_result(answer == "yes")
+        return True
+
+    def cancel_all(self) -> None:
+        """Resolve all pending approvals as `False` (`no`), used on `stop`."""
+        for approval_id in list(self._pending.keys()):
+            future = self._pending.pop(approval_id, None)
+            if future is not None and not future.done():
+                future.set_result(False)
+
+
+def _default_agent_builder(model_name: str, _ask: AskFn) -> Agent:
+    """Fallback agent factory used until ENG-380 wires `core/agent.py`."""
+    resolved = resolve_key("openai")
+    config = load_config()
+    model = OpenAIModel(model=model_name, api_key=resolved.key)
+    return Agent(model=model, max_steps=config.limits.max_steps)
+
+
+class AldwinHost:
+    """In-process pass that receives protocol requests and drives `AgentSession`."""
+
+    def __init__(
+        self,
+        transport: InProcessTransport,
+        session_store: SessionStore | None = None,
+        agent_builder: AgentBuilder | None = None,
+        *,
+        initial_model: str | None = None,
+        available_models: Sequence[str] | Callable[[], Sequence[str]] | None = None,
+        persist_model: bool = True,
+    ) -> None:
+        self._transport = transport
+        self._session_store = session_store or SessionStore()
+        self._agent_builder = agent_builder or _default_agent_builder
+        self._available_models = available_models
+        self._persist_model = persist_model
+
+        default_model = initial_model or load_config().model
+        self._stored_session: StoredSession = self._session_store.load_latest(
+            default_model=default_model
+        )
+        self._model: str = initial_model or self._stored_session.meta.model
+
+        self._approvals = ApprovalBroker(self._transport.send_event)
+        self._agent: Agent = self._agent_builder(self._model, self.ask)
+        self._agent_session: AgentSession = self._agent.start()
+        self._agent_session.memory = Memory.from_dict(
+            self._stored_session.memory.to_dict()
+        )
+
+        self._welcomed = False
+        self._active_turn_id: str | None = None
+        self._turn_task: asyncio.Task[None] | None = None
+        self._serve_task: asyncio.Task[None] | None = None
+
+        self._transport.set_new_conversation_handler(self.new_conversation)
+
+    @property
+    def model(self) -> str:
+        """Return the currently configured model name."""
+        return self._model
+
+    @property
+    def stored_session(self) -> StoredSession:
+        """Return the active `StoredSession`."""
+        return self._stored_session
+
+    async def start(self) -> None:
+        """Start the background request dispatch loop."""
+        if self._serve_task is None or self._serve_task.done():
+            self._serve_task = asyncio.create_task(self._serve_loop())
+
+    async def stop_host(self) -> None:
+        """Cancel any active turn, close the transport, and stop the dispatch loop."""
+        self._approvals.cancel_all()
+        if self._turn_task is not None and not self._turn_task.done():
+            self._agent_session.interrupt()
+            self._turn_task.cancel()
+            await asyncio.gather(self._turn_task, return_exceptions=True)
+        await self._transport.close()
+        if self._serve_task is not None and not self._serve_task.done():
+            await asyncio.gather(self._serve_task, return_exceptions=True)
+
+    async def ask(self, summary: str, detail: str = "") -> bool:
+        """Injected into tools so they can request user approval via the host."""
+        re_id = self._active_turn_id or "req_turn"
+        return await self._approvals.ask(re=re_id, summary=summary, detail=detail)
+
+    async def new_conversation(self) -> None:
+        """Close the current session file and start a fresh conversation (`FR-14`)."""
+        self._approvals.cancel_all()
+        if self._turn_task is not None and not self._turn_task.done():
+            self._agent_session.interrupt()
+            self._turn_task.cancel()
+            await asyncio.gather(self._turn_task, return_exceptions=True)
+
+        self._session_store.save(
+            self._stored_session,
+            self._agent_session.memory,
+            interrupted=False,
+        )
+        self._stored_session = self._session_store.create_new(model=self._model)
+        self._agent_session = self._agent.start()
+
+    async def _serve_loop(self) -> None:
+        """Receive requests from the transport and dispatch them."""
+        while True:
+            req = await self._transport.receive_request()
+            if req is None:
+                return
+            await self._dispatch(req)
+
+    async def _dispatch(self, req: Request) -> None:
+        """Route one incoming `Request`."""
+        if not self._welcomed and not isinstance(req, HelloRequest):
+            async with RequestScope(req.id, self._transport.send_event) as scope:
+                await scope.error(
+                    "protocol",
+                    "Handshake required: send a `hello` request first.",
+                )
+            return
+
+        if isinstance(req, TurnRequest):
+            if self._turn_task is not None and not self._turn_task.done():
+                async with RequestScope(req.id, self._transport.send_event) as scope:
+                    await scope.error(
+                        "busy",
+                        "Aldwin is still working on your last request. "
+                        "Press Esc to stop it first.",
+                    )
+                return
+
+            turn_scope = RequestScope(req.id, self._transport.send_event)
+            self._turn_task = asyncio.create_task(self._run_turn(turn_scope, req))
+            return
+
+        async with RequestScope(req.id, self._transport.send_event) as scope:
+            if isinstance(req, HelloRequest):
+                await self._handle_hello(scope, req)
+            elif isinstance(req, StopRequest):
+                await self._handle_stop(scope)
+            elif isinstance(req, ApproveRequest):
+                await self._handle_approve(scope, req)
+            elif isinstance(req, HistoryRequest):
+                await self._handle_history(scope, req)
+            elif isinstance(req, SetModelRequest):
+                await self._handle_set_model(scope, req)
+
+    async def _handle_hello(self, scope: RequestScope, req: HelloRequest) -> None:
+        if req.v_min <= PROTOCOL_VERSION <= req.v_max:
+            self._welcomed = True
+            await scope.done("ok")
+        else:
+            await scope.error(
+                "version_mismatch",
+                f"Protocol version mismatch: client supports {req.v_min}..{req.v_max}, "
+                f"host is v{PROTOCOL_VERSION}.",
+            )
+
+    async def _handle_stop(self, scope: RequestScope) -> None:
+        self._approvals.cancel_all()
+        if self._turn_task is not None and not self._turn_task.done():
+            self._agent_session.interrupt()
+            self._turn_task.cancel()
+            await asyncio.gather(self._turn_task, return_exceptions=True)
+        await scope.done("ok")
+
+    async def _handle_approve(self, scope: RequestScope, req: ApproveRequest) -> None:
+        if self._approvals.resolve(req.approval_id, req.answer):
+            await scope.done("ok")
+        else:
+            await scope.error(
+                "unknown_approval",
+                f"Approval {req.approval_id!r} is unknown or has already finished.",
+            )
+
+    async def _handle_history(self, scope: RequestScope, req: HistoryRequest) -> None:
+        messages = self._session_store.render_history(
+            self._agent_session.memory,
+            limit=req.limit,
+        )
+        await scope.emit(
+            HistoryEvent(
+                re=req.id,
+                messages=messages,
+                interrupted=self._stored_session.meta.interrupted,
+            )
+        )
+        await scope.done("ok")
+
+    def _is_model_allowed(self, name: str) -> bool:
+        cleaned = name.strip()
+        if not cleaned:
+            return False
+        if self._available_models is None:
+            return True
+        allowed = (
+            self._available_models()
+            if callable(self._available_models)
+            else self._available_models
+        )
+        return cleaned in allowed
+
+    async def _handle_set_model(
+        self,
+        scope: RequestScope,
+        req: SetModelRequest,
+    ) -> None:
+        if self._turn_task is not None and not self._turn_task.done():
+            await scope.error(
+                "busy",
+                "Aldwin is still working on your last request. "
+                "Press Esc to stop it before switching models.",
+            )
+            return
+
+        cleaned = req.name.strip()
+        if not self._is_model_allowed(cleaned):
+            await scope.error(
+                "unknown_model",
+                f"Model {cleaned!r} is not available. "
+                "Run `/model` to pick a supported model.",
+            )
+            return
+
+        self._model = cleaned
+        self._stored_session.meta.model = cleaned
+        if self._persist_model:
+            update_config_model(cleaned)
+
+        old_memory = self._agent_session.memory
+        self._agent = self._agent_builder(self._model, self.ask)
+        self._agent_session = self._agent.start()
+        self._agent_session.memory = old_memory
+        self._session_store.save(
+            self._stored_session,
+            self._agent_session.memory,
+            interrupted=self._stored_session.meta.interrupted,
+        )
+        await scope.done("ok")
+
+    async def _run_turn(self, scope: RequestScope, req: TurnRequest) -> None:
+        """Execute a turn and map Agentling events to protocol events."""
+        async with scope:
+            self._active_turn_id = req.id
+            self._agent_session._interrupt.clear()
+            step_text_chunks: list[str] = []
+            tool_start_times: dict[str, float] = {}
+            final_status: str = "completed"
+            final_usage: Usage | None = None
+
+            try:
+                async for ev in self._agent_session.run(
+                    req.text,
+                    stream=True,
+                    reset=False,
+                ):
+                    if isinstance(ev, TextDelta):
+                        if not step_text_chunks:
+                            self._session_store.save(
+                                self._stored_session,
+                                self._agent_session.memory,
+                                interrupted=True,
+                            )
+                        step_text_chunks.append(ev.text)
+                        await scope.emit(TextEvent(re=req.id, delta=ev.text))
+                    elif isinstance(ev, AgentlingToolCallEvent):
+                        step_text_chunks.clear()
+                        call = ev.tool_call
+                        tool_start_times[call.id] = time.monotonic()
+                        self._session_store.save(
+                            self._stored_session,
+                            self._agent_session.memory,
+                            interrupted=True,
+                        )
+                        await scope.emit(
+                            ToolCallEvent(
+                                re=req.id,
+                                call_id=call.id,
+                                name=call.name,
+                                args_preview=format_args_preview(call.arguments),
+                            )
+                        )
+                    elif isinstance(ev, AgentlingToolResultEvent):
+                        res = ev.result
+                        started = tool_start_times.pop(res.tool_call_id, None)
+                        duration_ms = (
+                            max(0, int((time.monotonic() - started) * 1000))
+                            if started is not None
+                            else 0
+                        )
+                        await scope.emit(
+                            ToolResultEvent(
+                                re=req.id,
+                                call_id=res.tool_call_id,
+                                ok=not res.is_error,
+                                summary=format_tool_summary(res.content),
+                                duration_ms=duration_ms,
+                            )
+                        )
+                    elif isinstance(ev, StepEvent):
+                        step_text_chunks.clear()
+                        self._session_store.save(
+                            self._stored_session,
+                            self._agent_session.memory,
+                            interrupted=True,
+                        )
+                    elif isinstance(ev, FinalEvent):
+                        final_status = ev.status
+                        final_usage = ev.usage
+
+                if final_status == "interrupted":
+                    self._flush_partial_text(step_text_chunks)
+                    self._session_store.save(
+                        self._stored_session,
+                        self._agent_session.memory,
+                        interrupted=False,
+                    )
+                    await scope.done("stopped", usage=_to_token_usage(final_usage))
+                    return
+
+                reason: DoneReason = (
+                    "max_steps" if final_status == "max_steps" else "answered"
+                )
+                self._session_store.save(
+                    self._stored_session,
+                    self._agent_session.memory,
+                    interrupted=False,
+                )
+                await scope.done(reason, usage=_to_token_usage(final_usage))
+
+            except asyncio.CancelledError:
+                self._approvals.cancel_all()
+                self._agent_session._interrupt.clear()
+                self._flush_partial_text(step_text_chunks)
+                self._session_store.save(
+                    self._stored_session,
+                    self._agent_session.memory,
+                    interrupted=False,
+                )
+                if not scope.terminated:
+                    await scope.done("stopped")
+                raise
+            except Exception as exc:
+                self._approvals.cancel_all()
+                self._agent_session._interrupt.clear()
+                logger.exception("Turn %s failed", req.id)
+                self._session_store.save(
+                    self._stored_session,
+                    self._agent_session.memory,
+                    interrupted=True,
+                )
+                code, msg = classify_turn_error(exc)
+                if not scope.terminated:
+                    await scope.error(code, msg)
+            finally:
+                self._active_turn_id = None
+
+    def _flush_partial_text(self, chunks: list[str]) -> None:
+        """Append partial streamed text as a `FinalStep` when stopped mid-stream."""
+        partial = "".join(chunks)
+        if not partial:
+            return
+        steps = self._agent_session.memory.steps
+        if not steps or not isinstance(steps[-1], FinalStep):
+            self._agent_session.memory.add(FinalStep(answer=partial))
+        chunks.clear()
