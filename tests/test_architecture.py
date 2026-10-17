@@ -34,3 +34,14 @@ def test_protocol_never_imports_core_or_agentling() -> None:
         text = path.read_text(encoding="utf-8")
         assert "aldwin.core" not in text, f"{path} must not import aldwin.core"
         assert "agentling" not in text, f"{path} must not import agentling"
+
+
+def test_core_never_imports_protocol_host_client_or_cli() -> None:
+    """The brain (`aldwin.core`) must never import protocol, host, client, or cli."""
+    core_files = list((SRC_ALDWIN / "core").rglob("*.py"))
+    assert core_files, "Expected at least one Python file in src/aldwin/core"
+    forbidden = ("aldwin.protocol", "aldwin.host", "aldwin.client", "aldwin.cli")
+    for path in core_files:
+        text = path.read_text(encoding="utf-8")
+        for pkg in forbidden:
+            assert pkg not in text, f"{path} must not import {pkg}"

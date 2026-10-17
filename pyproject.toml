@@ -51,6 +51,7 @@ packages = ["src/aldwin"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-m 'not live'"
 markers = [
     "live: calls the real OpenAI API (run by hand)",
 ]

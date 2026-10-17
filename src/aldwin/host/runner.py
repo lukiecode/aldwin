@@ -11,12 +11,10 @@ from types import TracebackType
 from typing import Any
 from uuid import uuid4
 
-import openai
 from agentling import (
     Agent,
     AgentSession,
     FinalEvent,
-    OpenAIModel,
     StepEvent,
     TextDelta,
 )
@@ -26,11 +24,17 @@ from agentling import (
 from agentling import (
     ToolResultEvent as AgentlingToolResultEvent,
 )
-from agentling.errors import ModelError
-from agentling.memory import FinalStep, Memory
+from agentling.memory import FinalStep
 from agentling.models import Usage
 
-from aldwin.core.settings import load_config, resolve_key, update_config_model
+from aldwin.core.agent import (
+    build_agent,
+    new_session,
+    restore_session,
+    switch_session_model,
+)
+from aldwin.core.models import RetryingModel, classify_model_error
+from aldwin.core.settings import load_config, load_secrets, update_config_model
 from aldwin.host.in_process import InProcessTransport
 from aldwin.host.sessions import (
     MAX_PREVIEW_CHARS,
@@ -53,6 +57,7 @@ from aldwin.protocol import (
     HistoryRequest,
     Request,
     SetModelRequest,
+    StatusEvent,
     StopRequest,
     TextEvent,
     TokenUsage,
@@ -97,45 +102,7 @@ def _to_token_usage(usage: Usage | None) -> TokenUsage | None:
 
 def classify_turn_error(exc: BaseException) -> tuple[ErrorCode, str]:
     """Map an Agentling or OpenAI exception to a protocol `(ErrorCode, message)`."""
-    if isinstance(exc, (openai.AuthenticationError, openai.PermissionDeniedError)):
-        return (
-            "auth_failed",
-            "Your OpenAI key was rejected. Run `aldwin setup` to update it.",
-        )
-    if isinstance(exc, openai.RateLimitError):
-        return (
-            "rate_limited",
-            "OpenAI rate limit reached. Wait a moment and try again.",
-        )
-    if isinstance(
-        exc,
-        (
-            openai.APIConnectionError,
-            openai.APITimeoutError,
-            openai.InternalServerError,
-            openai.APIStatusError,
-            ModelError,
-        ),
-    ):
-        text = str(exc).lower()
-        if "401" in text or "authentication" in text or "api key" in text:
-            return (
-                "auth_failed",
-                "Your OpenAI key was rejected. Run `aldwin setup` to update it.",
-            )
-        if "429" in text or "rate limit" in text:
-            return (
-                "rate_limited",
-                "OpenAI rate limit reached. Wait a moment and try again.",
-            )
-        return (
-            "model_unavailable",
-            "OpenAI could not be reached right now. Check your connection and retry.",
-        )
-    return (
-        "internal",
-        "Something went wrong. Details are in ~/.aldwin/logs/aldwin.log.",
-    )
+    return classify_model_error(exc)
 
 
 class RequestScope:
@@ -260,12 +227,11 @@ class ApprovalBroker:
                 future.set_result(False)
 
 
-def _default_agent_builder(model_name: str, _ask: AskFn) -> Agent:
-    """Fallback agent factory used until ENG-380 wires `core/agent.py`."""
-    resolved = resolve_key("openai")
-    config = load_config()
-    model = OpenAIModel(model=model_name, api_key=resolved.key)
-    return Agent(model=model, max_steps=config.limits.max_steps)
+def _default_agent_builder(model_name: str, ask: AskFn) -> Agent:
+    """Build Aldwin's `Agent` from home configuration, skills, and context (`FR-1`)."""
+    config = load_config().model_copy(update={"model": model_name})
+    secrets = load_secrets()
+    return build_agent(config, secrets, ask)
 
 
 class AldwinHost:
@@ -293,19 +259,43 @@ class AldwinHost:
         )
         self._model: str = initial_model or self._stored_session.meta.model
 
-        self._approvals = ApprovalBroker(self._transport.send_event)
-        self._agent: Agent = self._agent_builder(self._model, self.ask)
-        self._agent_session: AgentSession = self._agent.start()
-        self._agent_session.memory = Memory.from_dict(
-            self._stored_session.memory.to_dict()
-        )
-
         self._welcomed = False
         self._active_turn_id: str | None = None
+        self._active_turn_scope: RequestScope | None = None
         self._turn_task: asyncio.Task[None] | None = None
         self._serve_task: asyncio.Task[None] | None = None
 
+        self._approvals = ApprovalBroker(self._transport.send_event)
+        self._agent: Agent = self._build_and_attach_agent(self._model)
+        self._agent_session: AgentSession = restore_session(
+            self._agent,
+            self._stored_session.memory.dump_json(),
+        )
+
         self._transport.set_new_conversation_handler(self.new_conversation)
+
+    def _build_and_attach_agent(self, model_name: str) -> Agent:
+        """Build an `Agent` and attach the host's retry status callback."""
+        agent = self._agent_builder(model_name, self.ask)
+        if isinstance(agent.model, RetryingModel) and agent.model.on_retry is None:
+            agent.model.on_retry = self.on_retry
+        return agent
+
+    async def on_retry(
+        self,
+        attempt: int,
+        max_retries: int,
+        _exc: BaseException,
+    ) -> None:
+        """Emit a non-terminal `StatusEvent` when the model retries (`FR-8`)."""
+        scope = self._active_turn_scope
+        if scope is not None and not scope.terminated:
+            await scope.emit(
+                StatusEvent(
+                    re=scope.req_id,
+                    message=f"OpenAI is busy, retrying ({attempt} of {max_retries})…",
+                )
+            )
 
     @property
     def model(self) -> str:
@@ -352,7 +342,7 @@ class AldwinHost:
             interrupted=False,
         )
         self._stored_session = self._session_store.create_new(model=self._model)
-        self._agent_session = self._agent.start()
+        self._agent_session = new_session(self._agent)
 
     async def _serve_loop(self) -> None:
         """Receive requests from the transport and dispatch them."""
@@ -480,10 +470,8 @@ class AldwinHost:
         if self._persist_model:
             update_config_model(cleaned)
 
-        old_memory = self._agent_session.memory
-        self._agent = self._agent_builder(self._model, self.ask)
-        self._agent_session = self._agent.start()
-        self._agent_session.memory = old_memory
+        self._agent = self._build_and_attach_agent(self._model)
+        self._agent_session = switch_session_model(self._agent_session, self._agent)
         self._session_store.save(
             self._stored_session,
             self._agent_session.memory,
@@ -495,6 +483,7 @@ class AldwinHost:
         """Execute a turn and map Agentling events to protocol events."""
         async with scope:
             self._active_turn_id = req.id
+            self._active_turn_scope = scope
             self._agent_session._interrupt.clear()
             step_text_chunks: list[str] = []
             tool_start_times: dict[str, float] = {}
@@ -607,6 +596,7 @@ class AldwinHost:
                     await scope.error(code, msg)
             finally:
                 self._active_turn_id = None
+                self._active_turn_scope = None
 
     def _flush_partial_text(self, chunks: list[str]) -> None:
         """Append partial streamed text as a `FinalStep` when stopped mid-stream."""

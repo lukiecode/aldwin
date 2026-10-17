@@ -170,6 +170,13 @@ class HistoryEvent(EventBase):
     interrupted: bool = False
 
 
+class StatusEvent(EventBase):
+    """Non-terminal status notice (such as OpenAI retry progress)."""
+
+    kind: Literal["status"] = "status"
+    message: str
+
+
 class DoneEvent(EventBase):
     """Terminal success event ending a request."""
 
@@ -192,6 +199,7 @@ Event = Annotated[
     | ToolResultEvent
     | ApprovalEvent
     | HistoryEvent
+    | StatusEvent
     | DoneEvent
     | ErrorEvent,
     Field(discriminator="kind"),
