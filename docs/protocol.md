@@ -17,13 +17,13 @@ Every message is a Pydantic v2 model with `model_config = ConfigDict(extra="igno
 | `type` | Both | `str` | Request discriminator (`hello`, `turn`, `stop`, `approve`, `history`, `set_model`) or `"event"` for all host events. |
 | `id` | Door → Host | `str` | Unique request identifier (e.g. `req_a1b2c3d4e5f6`). |
 | `re` | Host → Door | `str` | Request `id` that this event replies to. Required on every event. |
-| `kind` | Host → Door | `str` | Event discriminator (`text`, `tool_call`, `tool_result`, `approval`, `history`, `done`, `error`). |
+| `kind` | Host → Door | `str` | Event discriminator (`text`, `tool_call`, `tool_result`, `approval`, `history`, `status`, `done`, `error`). |
 | `channel` | Both | `str = "cli"` | Originating door channel. |
 | `sender` | Both | `str` | `"cli"` on requests; `"host"` on events. |
 
 ---
 
-## The 13 messages
+## Protocol messages
 
 ### Requests (door → host)
 
@@ -45,6 +45,7 @@ Every message is a Pydantic v2 model with `model_config = ConfigDict(extra="igno
 | `tool_result` | `ToolResultEvent` | `call_id: str`, `ok: bool`, `summary: str` (≤ 120 chars), `duration_ms: int` | No | Tool execution completed. |
 | `approval` | `ApprovalEvent` | `approval_id: str`, `summary: str`, `detail: str = ""` | No | Host is paused waiting for a `yes` or `no` `approve` request. |
 | `history` | `HistoryEvent` | `messages: list[HistoryItem]`, `interrupted: bool` | No | Past messages (`role: "user" \| "assistant" \| "tool"`, `text`, `at`). |
+| `status` | `StatusEvent` | `message: str` | No | Non-terminal status notice (e.g. `OpenAI is busy, retrying (2 of 3)…`). |
 | `done` | `DoneEvent` | `reason: "answered" \| "stopped" \| "max_steps" \| "ok"`, `usage: TokenUsage \| None` | **Yes** | Request completed normally. |
 | `error` | `ErrorEvent` | `code: ErrorCode`, `message: str` | **Yes** | Request failed with a single-sentence actionable message. |
 

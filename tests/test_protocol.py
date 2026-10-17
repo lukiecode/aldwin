@@ -23,6 +23,7 @@ from aldwin.protocol import (
     HistoryRequest,
     Request,
     SetModelRequest,
+    StatusEvent,
     StopRequest,
     TextEvent,
     TokenUsage,
@@ -88,6 +89,10 @@ def test_every_request_round_trips_json(request_msg: Request) -> None:
                 HistoryItem(role="assistant", text="hello", at="2026-10-17T10:00:01Z"),
             ],
             interrupted=True,
+        ),
+        StatusEvent(
+            re="req_1",
+            message="OpenAI is busy, retrying (2 of 3)…",
         ),
         DoneEvent(
             re="req_1",
