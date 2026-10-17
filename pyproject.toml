@@ -64,6 +64,7 @@ select = ["E", "F", "I"]
 
 [tool.mypy]
 python_version = "3.11"
+mypy_path = "tests"
 plugins = ["pydantic.mypy"]
 warn_unused_ignores = true
 warn_redundant_casts = true
