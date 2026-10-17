@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Annotated, Any, Final, Literal
 from uuid import uuid4
 
@@ -212,21 +213,32 @@ Message = Annotated[
     Discriminator(_message_discriminator),
 ]
 
-REQUEST_ADAPTER: Final[TypeAdapter[Request]] = TypeAdapter(Request)
-EVENT_ADAPTER: Final[TypeAdapter[Event]] = TypeAdapter(Event)
-MESSAGE_ADAPTER: Final[TypeAdapter[Message]] = TypeAdapter(Message)
+
+@lru_cache(maxsize=1)
+def _request_adapter() -> TypeAdapter[Request]:
+    return TypeAdapter(Request)
+
+
+@lru_cache(maxsize=1)
+def _event_adapter() -> TypeAdapter[Event]:
+    return TypeAdapter(Event)
+
+
+@lru_cache(maxsize=1)
+def _message_adapter() -> TypeAdapter[Message]:
+    return TypeAdapter(Message)
 
 
 def parse_request(raw: str | bytes) -> Request:
     """Validate and parse a JSON request string or bytes into a `Request`."""
-    return REQUEST_ADAPTER.validate_json(raw)
+    return _request_adapter().validate_json(raw)
 
 
 def parse_event(raw: str | bytes) -> Event:
     """Validate and parse a JSON event string or bytes into an `Event`."""
-    return EVENT_ADAPTER.validate_json(raw)
+    return _event_adapter().validate_json(raw)
 
 
 def parse_message(raw: str | bytes) -> Message:
     """Validate and parse any protocol JSON frame into a `Request` or `Event`."""
-    return MESSAGE_ADAPTER.validate_json(raw)
+    return _message_adapter().validate_json(raw)

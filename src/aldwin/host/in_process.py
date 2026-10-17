@@ -9,12 +9,14 @@ import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from aldwin.core.home import ensure_home, format_home_path, home_dir
 from aldwin.core.logging import setup_logging
 from aldwin.core.settings import ConfigError, load_config
-from aldwin.protocol import Event, Request, parse_event, parse_request
+
+if TYPE_CHECKING:
+    from aldwin.protocol import Event, Request
 
 logger = logging.getLogger("aldwin.host")
 
@@ -157,6 +159,8 @@ class InProcessTransport:
         """Round-trip `request` through JSON wire validation and enqueue it."""
         if self._closed:
             raise RuntimeError("Transport is closed.")
+        from aldwin.protocol.messages import parse_request
+
         validated = parse_request(request.model_dump_json())
         await self._inbound.put(validated)
 
@@ -168,6 +172,8 @@ class InProcessTransport:
         """Round-trip `event` through JSON wire validation and enqueue it."""
         if self._closed:
             return
+        from aldwin.protocol.messages import parse_event
+
         validated = parse_event(event.model_dump_json())
         await self._outbound.put(validated)
 

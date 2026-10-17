@@ -1,10 +1,7 @@
 """Aldwin order slip (`protocol`): messages exchanged between doors and the host."""
 
 from aldwin.protocol.messages import (
-    EVENT_ADAPTER,
-    MESSAGE_ADAPTER,
     PROTOCOL_VERSION,
-    REQUEST_ADAPTER,
     ApprovalAnswer,
     ApprovalEvent,
     ApproveRequest,
@@ -40,7 +37,6 @@ __all__ = [
     "ApproveRequest",
     "DoneEvent",
     "DoneReason",
-    "EVENT_ADAPTER",
     "ErrorCode",
     "ErrorEvent",
     "Event",
@@ -50,10 +46,8 @@ __all__ = [
     "HistoryItem",
     "HistoryRequest",
     "HistoryRole",
-    "MESSAGE_ADAPTER",
     "Message",
     "PROTOCOL_VERSION",
-    "REQUEST_ADAPTER",
     "Request",
     "RequestBase",
     "SetModelRequest",
