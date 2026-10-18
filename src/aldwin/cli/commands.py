@@ -7,9 +7,11 @@ from typing import Final, Protocol
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
+from rich.table import Table
 from rich.text import Text
 
 from aldwin.cli.render import ChatRenderer
+from aldwin.cli.theme import filter_canonical_models
 from aldwin.client import (
     MemorySummary,
     PersonaSummary,
@@ -33,6 +35,7 @@ KEYBINDINGS_HELP: Final[tuple[tuple[str, str], ...]] = (
     ("Enter", "Send message"),
     ("Alt+Enter (Esc then Enter)", "Insert a new line"),
     ("Esc", "Stop the current answer or decline approval"),
+    ("?", "Show keyboard shortcuts (when prompt is empty)"),
     ("↑ / ↓", "Previous / next message in history"),
     ("Ctrl+R", "Search input history"),
     ("Ctrl+C twice / Ctrl+D", "Save and exit"),
@@ -84,19 +87,29 @@ class SlashCompleter(Completer):
                 )
 
 
+def render_shortcuts(renderer: ChatRenderer) -> None:
+    """Print the keyboard shortcuts table (`?` shortcut and `/help`)."""
+    console = renderer.console
+    console.print(Text("Keys:", style="accent"))
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="fg", no_wrap=True)
+    grid.add_column(style="muted")
+    for key, desc in KEYBINDINGS_HELP:
+        grid.add_row(f"  {key}", desc)
+    console.print(grid)
+
+
 def _render_help(renderer: ChatRenderer) -> None:
     console = renderer.console
     console.print(Text("Commands:", style="accent"))
+    cmd_grid = Table.grid(padding=(0, 2))
+    cmd_grid.add_column(style="fg", no_wrap=True)
+    cmd_grid.add_column(style="muted")
     for cmd, desc in SLASH_COMMANDS:
-        line = Text(f"  {cmd:<10} ")
-        line.append(desc, style="muted")
-        console.print(line)
-
-    console.print(Text("Keys:", style="accent"))
-    for key, desc in KEYBINDINGS_HELP:
-        line = Text(f"  {key:<26} ")
-        line.append(desc, style="muted")
-        console.print(line)
+        cmd_grid.add_row(f"  {cmd}", desc)
+    console.print(cmd_grid)
+    console.print()
+    render_shortcuts(renderer)
 
 
 async def _handle_model_command(
@@ -107,7 +120,8 @@ async def _handle_model_command(
     prompt_line: Callable[[str], Awaitable[str]],
 ) -> None:
     console = renderer.console
-    if arg:
+    show_all = arg.lower() == "all"
+    if arg and not show_all:
         res = await client.set_model(arg)
         if isinstance(res, ErrorEvent):
             renderer.render_error(res.code, res.message)
@@ -115,14 +129,27 @@ async def _handle_model_command(
             console.print(Text(f"✓ Switched model to {arg}.", style="ok"))
         return
 
-    models = await client.list_models()
-    if not models:
-        models = [client.model]
+    all_models = await client.list_models()
+    if not all_models:
+        all_models = [client.model]
 
-    console.print(Text("Available OpenAI chat models:", style="muted"))
+    if show_all:
+        models = list(all_models)
+        hidden_count = 0
+    else:
+        models, hidden_count = filter_canonical_models(all_models, client.model)
+
+    header = "Available OpenAI chat models:"
+    if hidden_count > 0:
+        header += (
+            f" (showing {len(models)} canonical · "
+            f"use /model all for all {len(all_models)})"
+        )
+    console.print(Text(header, style="muted"))
     for idx, name in enumerate(models, start=1):
         marker = " (current)" if name == client.model else ""
-        console.print(Text(f"  {idx}. {name}{marker}"))
+        style = "ok" if name == client.model else ""
+        console.print(Text(f"  {idx}. {name}{marker}", style=style))
 
     try:
         raw_choice = await prompt_line(
@@ -170,7 +197,7 @@ def _render_persona(client: SlashCommandClient, renderer: ChatRenderer) -> None:
         ),
         soft_wrap=True,
     )
-    console.print(Text(info.text))
+    console.print(Text(info.text, style="fg"))
 
 
 def _render_memory(client: SlashCommandClient, renderer: ChatRenderer) -> None:
@@ -200,7 +227,7 @@ def _render_memory(client: SlashCommandClient, renderer: ChatRenderer) -> None:
     )
     if mem.recent_notes:
         for note in mem.recent_notes:
-            console.print(Text(f"  - [{note.date}] {note.text}"))
+            console.print(Text(f"  - [{note.date}] {note.text}", style="fg"))
     else:
         console.print(Text("  (no recent notes)", style="muted"))
 
@@ -210,11 +237,12 @@ def _render_skills(client: SlashCommandClient, renderer: ChatRenderer) -> None:
     report = client.skills_report()
     console.print(Text("Skills:", style="muted"))
     if report.valid:
+        grid = Table.grid(padding=(0, 2))
+        grid.add_column(style="fg", no_wrap=True)
+        grid.add_column(style="muted")
         for skill in report.valid:
-            line = Text("  ✓ ", style="ok")
-            line.append(skill.name)
-            line.append(f": {skill.description}", style="muted")
-            console.print(line)
+            grid.add_row(f"  • {skill.name}", skill.description)
+        console.print(grid)
     else:
         console.print(Text("  (no valid skills installed)", style="muted"))
 
@@ -228,13 +256,15 @@ def _render_tools(client: SlashCommandClient, renderer: ChatRenderer) -> None:
     console = renderer.console
     tools = client.tools_summary()
     console.print(Text("Built-in tools:", style="muted"))
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="fg", no_wrap=True)
+    grid.add_column(style="muted")
     for tool_info in tools:
         if tool_info.name == "set_persona":
             continue
-        line = Text(f"  • {tool_info.name:<13} ")
         suffix = " (always asks y/n)" if tool_info.requires_approval else ""
-        line.append(f"{tool_info.description}{suffix}", style="muted")
-        console.print(line)
+        grid.add_row(f"  • {tool_info.name}", f"{tool_info.description}{suffix}")
+    console.print(grid)
 
 
 async def handle_slash_command(

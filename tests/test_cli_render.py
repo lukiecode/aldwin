@@ -5,9 +5,15 @@ from __future__ import annotations
 import io
 from datetime import datetime, timezone
 
-from aldwin.cli.render import ChatRenderer, split_markdown_blocks
+from aldwin.cli.render import (
+    ChatRenderer,
+    clean_tool_summary,
+    format_display_args,
+    split_markdown_blocks,
+)
 from aldwin.cli.theme import (
     create_console,
+    filter_canonical_models,
     format_duration_ms,
     format_elapsed_s,
     format_relative_time,
@@ -401,3 +407,79 @@ def test_multiline_approval_panel_and_turn_close_cleanup() -> None:
     assert turn._live is not None
     turn.close()
     assert turn._live is None
+
+
+def test_format_display_args_and_clean_tool_summary() -> None:
+    """JSON tool args unwrap to clean strings; load_skill header becomes 'loaded'."""
+    assert (
+        format_display_args('{"query": "Folarin Akinloye Cuvama"}')
+        == '"Folarin Akinloye Cuvama"'
+    )
+    assert format_display_args('{"command": "df -h"}') == "df -h"
+    assert (
+        format_display_args('{"url": "https://agentling.dev"}')
+        == "https://agentling.dev"
+    )
+    assert format_display_args('{"name": "using-aldwin"}') == "using-aldwin"
+    assert (
+        format_display_args('{"text": "The user\'s name is Folarin."}')
+        == '"The user\'s name is Folarin."'
+    )
+    assert (
+        format_display_args(
+            '{"new_text": "Line 1\\nLine 2\\nLine 3"}', tool_name="set_persona"
+        )
+        == "persona.md · 3 lines"
+    )
+    assert clean_tool_summary("load_skill", "# Using Aldwin") == "loaded"
+    assert clean_tool_summary("web_search", "5 results") == "5 results"
+
+
+def test_wide_120_column_panels_cap_at_76_columns() -> None:
+    """Panels cap width at <= 76 columns on wide 120-column terminals."""
+    buf = io.StringIO()
+    console = create_console(width=120, record=True, file=buf)
+    renderer = ChatRenderer(console)
+    renderer.render_welcome(first_run=True, model="gpt-4o", display_home="~/.aldwin")
+
+    for line in console.export_text().splitlines():
+        assert len(line.rstrip()) <= 76
+
+
+def test_filter_canonical_models() -> None:
+    """filter_canonical_models hides dated snapshots and puts current model first."""
+    raw = [
+        "gpt-5-2025-08-07",
+        "gpt-5",
+        "gpt-5-chat-latest",
+        "gpt-5.2-codex",
+        "gpt-4.1",
+        "gpt-4.1-2025-04-14",
+        "gpt-4o",
+    ]
+    filtered, hidden = filter_canonical_models(raw, "gpt-4o")
+    assert filtered == ["gpt-4o", "gpt-5", "gpt-4.1"]
+    assert hidden == 4
+
+
+def test_resolve_approval_collapses_to_one_line_and_list_paragraph_spacing() -> None:
+    """resolve_approval prints one-line record; markdown blocks have blank line."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+    turn = renderer.start_turn()
+
+    ev = ApprovalEvent(
+        re="r1",
+        approval_id="ap_1",
+        summary="Run this command?",
+        detail="df -h",
+    )
+    turn.pause_for_approval(ev)
+    turn.resolve_approval(ev, "yes")
+    turn.on_text("- item one\n- item two\n\nThis overview condenses the result.")
+    turn.finish_done(DoneEvent(re="r1", reason="answered"))
+
+    text = console.export_text()
+    assert "✓ approved  df -h" in text
+    assert "\n\nThis overview condenses the result." in text

@@ -47,14 +47,21 @@ async def _launch_interactive_session(
     from aldwin.cli.theme import create_console
 
     console = create_console(plain=result.plain)
+    ran_onboarding = False
     if needs_onboarding(result):
         ok = await run_onboarding(result, console)
         if not ok:
             return 1
+        ran_onboarding = True
     elif result.created:
         console.print(f"Created {result.display_home}", soft_wrap=True)
 
-    return await run_chat(result, debug=debug, console=console)
+    return await run_chat(
+        result,
+        debug=debug,
+        skip_welcome=ran_onboarding,
+        console=console,
+    )
 
 
 @app.callback(invoke_without_command=True)

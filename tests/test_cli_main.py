@@ -140,15 +140,28 @@ async def test_launch_interactive_session_onboarding_and_chat(
     monkeypatch.setattr(onboarding_mod, "run_onboarding", fail_onboarding)
     assert await cli_main._launch_interactive_session(boot, debug=False) == 1
 
-    # Case 2: key present -> skips onboarding and runs run_chat
+    # Case 2: key present -> skips onboarding and runs run_chat(skip_welcome=False)
     save_setup(openai_api_key="sk-proj-ready1234", home=aldwin_home)
-    chat_called = False
+    seen_skip_welcome: list[bool] = []
 
-    async def fake_run_chat(*_args: object, **_kwargs: object) -> int:
-        nonlocal chat_called
-        chat_called = True
+    async def fake_run_chat(
+        *_args: object,
+        skip_welcome: bool = False,
+        **_kwargs: object,
+    ) -> int:
+        seen_skip_welcome.append(skip_welcome)
         return 0
 
     monkeypatch.setattr(chat_mod, "run_chat", fake_run_chat)
     assert await cli_main._launch_interactive_session(boot, debug=True) == 0
-    assert chat_called is True
+    assert seen_skip_welcome == [False]
+
+    # Case 3: onboarding runs -> passes skip_welcome=True to avoid duplicate panel
+    (aldwin_home / "secrets.yaml").unlink()
+
+    async def ok_onboarding(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr(onboarding_mod, "run_onboarding", ok_onboarding)
+    assert await cli_main._launch_interactive_session(boot, debug=False) == 0
+    assert seen_skip_welcome == [False, True]

@@ -164,7 +164,7 @@ async def test_prompt_input_bindings_empty_ignored_and_toolbar(
     _ = aldwin_home
     assert (
         format_bottom_toolbar("gpt-4o", "2026-10-18_3f2a9b1c", 6200)
-        == " gpt-4o · 3f2a · 6.2k tokens "
+        == " gpt-4o · 95% context left   ? shortcuts · esc stop "
     )
 
     boot = bootstrap(plain=True)

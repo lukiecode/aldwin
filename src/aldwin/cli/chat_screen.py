@@ -18,15 +18,21 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput, Output
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
+from rich.rule import Rule
 from rich.text import Text
 
 from aldwin.cli.commands import (
     SlashCommandClient,
     SlashCompleter,
     handle_slash_command,
+    render_shortcuts,
 )
 from aldwin.cli.render import ChatRenderer
-from aldwin.cli.theme import create_console, format_tokens, short_session_id
+from aldwin.cli.theme import (
+    PROMPT_STYLE,
+    context_left_percent,
+    create_console,
+)
 from aldwin.client import (
     BootstrapResult,
     open_in_process_client,
@@ -77,13 +83,20 @@ class ChatClientProtocol(SlashCommandClient, Protocol):
 
 def format_bottom_toolbar(
     model: str,
-    session_id: str,
-    total_tokens: int,
+    session_id: str = "",
+    used_tokens: int = 0,
+    *,
+    width: int | None = None,
 ) -> str:
-    """Format the bottom toolbar (`<model> · <short_id> · <tokens>`) (`FR-4`)."""
-    short_id = short_session_id(session_id)
-    tokens_str = format_tokens(total_tokens)
-    return f" {model} · {short_id} · {tokens_str} tokens "
+    """Format the bottom status line (`<model> · <N>% context left` + hints)."""
+    _ = session_id
+    pct = context_left_percent(model, used_tokens)
+    left = f" {model} · {pct}% context left"
+    right = "? shortcuts · esc stop "
+    if width is not None and width >= len(left) + len(right) + 4:
+        gap = width - len(left) - len(right)
+        return f"{left}{' ' * gap}{right}"
+    return f"{left}   {right}"
 
 
 async def read_approval_key(
@@ -287,6 +300,7 @@ def build_prompt_session(
     home: Path,
     *,
     toolbar_fn: Callable[[], str],
+    plain: bool = False,
     input_dev: Input | None = None,
     output_dev: Output | None = None,
 ) -> PromptSession[str]:
@@ -306,6 +320,7 @@ def build_prompt_session(
         completer=SlashCompleter(),
         key_bindings=kb,
         bottom_toolbar=toolbar_fn,
+        style=None if plain else PROMPT_STYLE,
         multiline=False,
         input=input_dev,
         output=effective_output,
@@ -316,6 +331,7 @@ async def run_chat(
     boot: BootstrapResult,
     *,
     debug: bool = False,
+    skip_welcome: bool = False,
     client: ChatClientProtocol | None = None,
     console: Console | None = None,
     input_dev: Input | None = None,
@@ -356,6 +372,7 @@ async def run_chat(
             input_dev=active_input,
             output_dev=output_dev,
             owns_input=owns_input,
+            skip_welcome=skip_welcome,
         )
 
     ctx: AbstractAsyncContextManager[ChatClientProtocol] = open_in_process_client(
@@ -370,6 +387,7 @@ async def run_chat(
             input_dev=active_input,
             output_dev=output_dev,
             owns_input=owns_input,
+            skip_welcome=skip_welcome,
         )
 
 
@@ -381,22 +399,29 @@ async def _chat_loop(
     input_dev: Input,
     output_dev: Output | None,
     owns_input: bool,
+    skip_welcome: bool = False,
 ) -> int:
     console = renderer.console
-    total_tokens = 0
+    last_context_tokens = 0
     last_ctrl_c_at = 0.0
     quit_requested = False
 
     def _reset_tokens() -> None:
-        nonlocal total_tokens
-        total_tokens = 0
+        nonlocal last_context_tokens
+        last_context_tokens = 0
 
     def _toolbar() -> str:
-        return format_bottom_toolbar(client.model, client.session_id, total_tokens)
+        return format_bottom_toolbar(
+            client.model,
+            client.session_id,
+            last_context_tokens,
+            width=console.width,
+        )
 
     session = build_prompt_session(
         boot.home,
         toolbar_fn=_toolbar,
+        plain=boot.plain,
         input_dev=input_dev,
         output_dev=output_dev,
     )
@@ -406,17 +431,19 @@ async def _chat_loop(
         sub_session: PromptSession[str] = PromptSession(
             input=input_dev,
             output=sub_output,
+            style=None if boot.plain else PROMPT_STYLE,
         )
         return await sub_session.prompt_async(label)
 
     try:
         await client.connect()
         history_ev = await client.history(limit=20)
-        renderer.render_welcome(
-            first_run=False,
-            model=client.model,
-            display_home=boot.display_home,
-        )
+        if not skip_welcome:
+            renderer.render_welcome(
+                first_run=False,
+                model=client.model,
+                display_home=boot.display_home,
+            )
         renderer.render_history(history_ev, updated_at=client.updated_at)
 
         profile_warn = pop_profile_truncation_warning()
@@ -424,8 +451,16 @@ async def _chat_loop(
             console.print(Text(profile_warn, style="warn"))
 
         use_patch_stdout = not isinstance(input_dev, PipeInput) and sys.stdout.isatty()
+        first_prompt = True
 
         while not quit_requested:
+            if not first_prompt:
+                console.print()
+            first_prompt = False
+
+            if not boot.plain and console.is_interactive:
+                console.print(Rule(style="border", characters="─"))
+
             try:
                 if use_patch_stdout:
                     with patch_stdout(raw=True):
@@ -442,11 +477,18 @@ async def _chat_loop(
             except EOFError:
                 break
 
-            if not user_text.strip():
+            stripped_input = user_text.strip()
+            if not stripped_input:
                 continue
 
+            console.print()
             last_ctrl_c_at = 0.0
-            if user_text.lstrip().startswith("/"):
+
+            if stripped_input == "?":
+                render_shortcuts(renderer)
+                continue
+
+            if stripped_input.startswith("/"):
                 should_exit = await handle_slash_command(
                     user_text,
                     client=client,
@@ -494,9 +536,15 @@ async def _chat_loop(
                             with listener.paused():
                                 answer = await read_approval_key(input_dev)
                             await client.approve(ev.approval_id, answer)
-                            turn_renderer.resume_after_approval()
+                            turn_renderer.resolve_approval(ev, answer)
                         elif isinstance(ev, DoneEvent):
-                            total_tokens += turn_renderer.finish_done(ev)
+                            turn_tokens = turn_renderer.finish_done(ev)
+                            if ev.usage is not None:
+                                last_context_tokens = (
+                                    ev.usage.input_tokens + ev.usage.output_tokens
+                                )
+                            else:
+                                last_context_tokens += turn_tokens
                         elif isinstance(ev, ErrorEvent):
                             turn_renderer.finish_error(ev)
             finally:

@@ -9,17 +9,24 @@ from pathlib import Path
 from typing import Final
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.layout.processors import (
+    Processor,
+    Transformation,
+    TransformationInput,
+)
 from rich.console import Console
 from rich.status import Status
 from rich.text import Text
 
 from aldwin.cli.render import TIPS_LINE, ChatRenderer
+from aldwin.cli.theme import PROMPT_STYLE, filter_canonical_models
 from aldwin.client import (
     BootstrapResult,
     KeyCheckResult,
     check_openai_key,
     get_onboarding_status,
     list_available_models,
+    mask_secret,
     save_setup,
 )
 
@@ -41,8 +48,23 @@ _KEY_ERROR_MESSAGES: Final[dict[KeyCheckResult, str]] = {
 }
 
 
+class _HiddenInputProcessor(Processor):
+    """Hides secret input completely without echoing asterisks that wrap lines."""
+
+    def apply_transformation(
+        self,
+        transformation_input: TransformationInput,
+    ) -> Transformation:
+        _ = transformation_input
+        return Transformation(
+            [],
+            source_to_display=lambda _i: 0,
+            display_to_source=lambda _i: 0,
+        )
+
+
 async def _default_prompt(prompt_text: str, is_password: bool) -> str:
-    """Read one line of user input via `PromptSession`, masking when `is_password`."""
+    """Read one line of user input via `PromptSession`, hiding secret characters."""
     if not sys.stdin.isatty():
         sys.stdout.write(prompt_text)
         sys.stdout.flush()
@@ -50,8 +72,14 @@ async def _default_prompt(prompt_text: str, is_password: bool) -> str:
         if line == "":
             raise EOFError
         return line.rstrip("\r\n")
-    session: PromptSession[str] = PromptSession()
-    return await session.prompt_async(prompt_text, is_password=is_password)
+    processors: list[Processor] | None = (
+        [_HiddenInputProcessor()] if is_password else None
+    )
+    session: PromptSession[str] = PromptSession(
+        style=PROMPT_STYLE,
+        input_processors=processors,
+    )
+    return await session.prompt_async(prompt_text)
 
 
 def needs_onboarding(boot: BootstrapResult) -> bool:
@@ -80,7 +108,7 @@ async def _prompt_and_verify_openai_key(
     plain: bool,
     prompt_fn: PromptCallable,
     checker: KeyCheckerCallable,
-    prompt_label: str = "OpenAI API key: ",
+    prompt_label: str = "OpenAI API key (input hidden): ",
     allow_empty_keep: bool = False,
 ) -> tuple[bool, str | None]:
     """Prompt up to 3 times for an OpenAI API key and validate it (`FR-2`).
@@ -113,7 +141,10 @@ async def _prompt_and_verify_openai_key(
             checker=checker,
         )
         if result == "ok":
-            ok_line = Text("Checking key… ")
+            masked = mask_secret(cleaned)
+            ok_line = Text("Checking key… ", style="muted")
+            if masked:
+                ok_line.append(f"{masked} ", style="muted")
             ok_line.append("✓", style="ok")
             console.print(ok_line)
             return True, cleaned
@@ -173,6 +204,7 @@ async def run_onboarding(
         model=boot.model,
         display_home=boot.display_home,
     )
+    console.print()
 
     ok, verified_openai_key = await _prompt_and_verify_openai_key(
         console=console,
@@ -185,12 +217,16 @@ async def run_onboarding(
 
     try:
         tavily_raw = await active_prompt(
-            "Tavily key for web search (Enter to skip): ",
+            "Tavily key for web search (input hidden, Enter to skip): ",
             True,
         )
     except (EOFError, KeyboardInterrupt):
         tavily_raw = ""
     tavily_key = tavily_raw.strip() or None
+    if tavily_key:
+        tavily_line = Text(f"Tavily key… {mask_secret(tavily_key)} ", style="muted")
+        tavily_line.append("✓", style="ok")
+        console.print(tavily_line)
 
     save_setup(
         openai_api_key=verified_openai_key,
@@ -213,6 +249,7 @@ async def run_onboarding(
             soft_wrap=True,
         )
     console.print(Text(TIPS_LINE, style="muted"))
+    console.print()
     return True
 
 
@@ -250,9 +287,13 @@ async def run_setup(
         model=status.model,
         display_home=boot.display_home,
     )
+    console.print()
 
     if status.has_openai_key:
-        openai_label = f"OpenAI API key [{status.masked_openai_key}] (Enter to keep): "
+        openai_label = (
+            f"OpenAI API key [{status.masked_openai_key}] "
+            "(input hidden, Enter to keep): "
+        )
         ok, new_openai_key = await _prompt_and_verify_openai_key(
             console=console,
             plain=boot.plain,
@@ -269,7 +310,7 @@ async def run_setup(
             plain=boot.plain,
             prompt_fn=active_prompt,
             checker=active_checker,
-            prompt_label="OpenAI API key: ",
+            prompt_label="OpenAI API key (input hidden): ",
             allow_empty_keep=False,
         )
         if not ok or new_openai_key is None:
@@ -278,22 +319,31 @@ async def run_setup(
     tavily_label = (
         f"Tavily key for web search [{status.masked_tavily_key}] (Enter to keep): "
         if status.has_tavily_key
-        else "Tavily key for web search (Enter to skip): "
+        else "Tavily key for web search (input hidden, Enter to skip): "
     )
     try:
         tavily_raw = await active_prompt(tavily_label, True)
     except (EOFError, KeyboardInterrupt):
         tavily_raw = ""
     new_tavily_key = tavily_raw.strip() or None
+    if new_tavily_key:
+        tavily_line = Text(
+            f"Tavily key… {mask_secret(new_tavily_key)} ",
+            style="muted",
+        )
+        tavily_line.append("✓", style="ok")
+        console.print(tavily_line)
 
-    models = await active_lister(new_openai_key, boot.home)
-    if not models:
-        models = [status.model]
+    all_models = await active_lister(new_openai_key, boot.home)
+    if not all_models:
+        all_models = [status.model]
+    models, _ = filter_canonical_models(all_models, status.model)
 
     console.print(Text("Available OpenAI chat models:", style="muted"))
     for idx, model_name in enumerate(models, start=1):
         marker = " (current)" if model_name == status.model else ""
-        console.print(Text(f"  {idx}. {model_name}{marker}"))
+        style = "ok" if model_name == status.model else ""
+        console.print(Text(f"  {idx}. {model_name}{marker}", style=style))
 
     try:
         model_choice = await active_prompt(

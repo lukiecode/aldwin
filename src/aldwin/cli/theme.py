@@ -1,22 +1,133 @@
-"""Rich theme tokens, console factory, and display formatters for Aldwin's CLI."""
+"""Rich theme tokens, console factory, prompt_toolkit styles, and display formatters."""
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import IO, Final
 
+from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.theme import Theme
 
 THEME: Final[Theme] = Theme(
     {
+        "fg": "default",
         "accent": "cyan",
+        "code": "cyan",
         "muted": "grey50",
+        "border": "grey50",
         "ok": "green",
         "warn": "yellow",
         "err": "red",
+        "markdown.paragraph": "default",
+        "markdown.text": "default",
+        "markdown.em": "italic",
+        "markdown.emph": "italic",
+        "markdown.strong": "bold",
+        "markdown.code": "cyan",
+        "markdown.code_block": "cyan",
+        "markdown.block_quote": "grey50",
+        "markdown.list": "default",
+        "markdown.item": "default",
+        "markdown.item.bullet": "grey50",
+        "markdown.item.number": "grey50",
+        "markdown.hr": "grey50",
+        "markdown.h1": "bold underline",
+        "markdown.h2": "bold",
+        "markdown.h3": "bold",
+        "markdown.h4": "bold grey50",
+        "markdown.h5": "italic",
+        "markdown.h6": "grey50",
+        "markdown.link": "cyan",
+        "markdown.link_url": "cyan underline",
     }
 )
+
+PROMPT_STYLE: Final[Style] = Style.from_dict(
+    {
+        "": "ansibrightblack",
+        "prompt": "ansicyan bold",
+        "bottom-toolbar": "noreverse ansibrightblack",
+        "bottom-toolbar.text": "noreverse ansibrightblack",
+        "completion-menu": "bg:ansiblack ansiwhite",
+        "completion-menu.completion": "bg:ansiblack ansiwhite",
+        "completion-menu.completion.current": "bg:ansicyan ansiblack bold",
+        "completion-menu.meta.completion": "bg:ansiblack ansibrightblack",
+        "completion-menu.meta.completion.current": "bg:ansicyan ansiblack",
+    }
+)
+
+_DATED_SNAPSHOT_RE: Final[re.Pattern[str]] = re.compile(r"-\d{4}-\d{2}-\d{2}$")
+_SNAPSHOT_SUFFIXES: Final[tuple[str, ...]] = (
+    "-chat-latest",
+    "-codex",
+    "-codex-max",
+    "-codex-mini",
+)
+
+
+def model_context_window(model: str) -> int:
+    """Return the nominal context window in tokens for `model`."""
+    lowered = model.strip().lower()
+    if lowered.startswith(("gpt-4.1", "gpt-5")):
+        return 400_000
+    if lowered.startswith(("o3", "o4")):
+        return 200_000
+    return 128_000
+
+
+def context_left_percent(model: str, used_tokens: int) -> int:
+    """Return remaining context percentage (`0..100`) for `model` (`FR-13`)."""
+    window = max(1, model_context_window(model))
+    clamped_used = max(0, int(used_tokens))
+    remaining = max(0.0, float(window - clamped_used)) / float(window) * 100.0
+    return max(0, min(100, round(remaining)))
+
+
+def is_canonical_model(model_id: str) -> bool:
+    """Return `True` if `model_id` is a canonical model alias rather than a snapshot."""
+    cleaned = model_id.strip().lower()
+    if not cleaned:
+        return False
+    if _DATED_SNAPSHOT_RE.search(cleaned):
+        return False
+    return not any(cleaned.endswith(suffix) for suffix in _SNAPSHOT_SUFFIXES)
+
+
+def filter_canonical_models(
+    models: Sequence[str],
+    current_model: str,
+) -> tuple[list[str], int]:
+    """Filter `models` to canonical aliases with `current_model` first.
+
+    Returns `(filtered_models, hidden_snapshot_count)`. Falls back to the full
+    list if filtering would leave zero models.
+    """
+    unique: list[str] = []
+    seen: set[str] = set()
+    for name in models:
+        cleaned = name.strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            unique.append(cleaned)
+
+    current_clean = current_model.strip()
+    canonical = [m for m in unique if m == current_clean or is_canonical_model(m)]
+    if not canonical:
+        canonical = list(unique)
+
+    if current_clean and current_clean in canonical:
+        canonical = [
+            current_clean,
+            *[m for m in canonical if m != current_clean],
+        ]
+    elif current_clean:
+        canonical = [current_clean, *canonical]
+
+    hidden_count = max(0, len(unique) - len(canonical))
+    return canonical, hidden_count
 
 
 def create_console(

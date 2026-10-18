@@ -454,6 +454,7 @@ __all__ = [
     "get_persona_text",
     "get_skills_report",
     "list_available_models",
+    "mask_secret",
     "open_in_process_client",
     "pop_profile_truncation_warning",
     "purge_home_data",

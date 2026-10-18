@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -65,15 +66,27 @@ class SetPersonaTool(Tool):
 
         approved = await self._ask("Update persona?", cleaned)
         if not approved:
-            return ToolOutput("user declined", summary="user declined", ok=False)
+            return ToolOutput(
+                "user declined",
+                summary="user declined",
+                ok=False,
+                duration_ms=0,
+            )
 
+        exec_started = time.monotonic()
         await asyncio.to_thread(
             write_persona,
             self._home,
             cleaned,
             cap=self._cap,
         )
-        return ToolOutput("persona updated", summary="persona updated", ok=True)
+        elapsed_ms = max(0, int((time.monotonic() - exec_started) * 1000))
+        return ToolOutput(
+            "persona updated",
+            summary="persona updated",
+            ok=True,
+            duration_ms=elapsed_ms,
+        )
 
 
 def build_persona_tool(

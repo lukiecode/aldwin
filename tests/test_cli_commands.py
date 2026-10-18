@@ -85,6 +85,43 @@ async def test_slash_model_numbered_list_and_switch() -> None:
     )
     assert "Invalid selection '99'" in console.export_text()
 
+    # Dated snapshots are hidden by default and shown with `/model all`
+    client.available_models = [
+        "gpt-5-2025-08-07",
+        "gpt-5",
+        "gpt-4o",
+        "gpt-4o-2024-11-20",
+    ]
+    buf_snap = io.StringIO()
+    renderer_snap = ChatRenderer(
+        create_console(plain=True, width=80, record=True, file=buf_snap),
+        plain=True,
+    )
+    await handle_slash_command(
+        "/model",
+        client=client,
+        renderer=renderer_snap,
+        prompt_line=_noop_prompt,
+    )
+    snap_text = renderer_snap.console.export_text()
+    assert "gpt-5-2025-08-07" not in snap_text
+    assert "use /model all for all 4" in snap_text
+
+    buf_all = io.StringIO()
+    renderer_all = ChatRenderer(
+        create_console(plain=True, width=80, record=True, file=buf_all),
+        plain=True,
+    )
+    await handle_slash_command(
+        "/model all",
+        client=client,
+        renderer=renderer_all,
+        prompt_line=_noop_prompt,
+    )
+    all_text = renderer_all.console.export_text()
+    assert "gpt-5-2025-08-07" in all_text
+    assert "gpt-4o-2024-11-20" in all_text
+
 
 async def test_slash_unknown_command() -> None:
     """TC-13: /unknown prints 'Unknown command. Type /help.' without starting a turn."""
@@ -155,7 +192,7 @@ async def test_slash_completer_and_inspect_commands() -> None:
     assert "calm and direct assistant" in text
     assert "~/.aldwin/memory/profile.md" in text
     assert "Fola prefers short answers" in text
-    assert "✓ using-aldwin: How to use Aldwin's memory, persona, and tools." in text
+    assert "• using-aldwin  How to use Aldwin's memory, persona, and tools." in text
     assert "✗ broken-skill (invalid: missing description)" in text
     assert "web_search" in text
     assert "run_command" in text and "always asks y/n" in text
