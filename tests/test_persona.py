@@ -134,6 +134,7 @@ async def test_set_persona_declined_or_stopped_keeps_original_persona(
 
         tool_results = [e for e in turn_1_events if isinstance(e, ToolResultEvent)]
         assert len(tool_results) == 1
+        assert tool_results[0].ok is False
         assert tool_results[0].summary == "user declined"
         assert persona_path.read_text(encoding="utf-8") == original_text
 

@@ -35,7 +35,7 @@ from aldwin.core.agent import (
 )
 from aldwin.core.models import RetryingModel, classify_model_error
 from aldwin.core.settings import load_config, load_secrets, update_config_model
-from aldwin.core.tools import RememberTool
+from aldwin.core.tools import RememberTool, summarize_tool_result
 from aldwin.host.in_process import InProcessTransport
 from aldwin.host.sessions import (
     MAX_PREVIEW_CHARS,
@@ -537,12 +537,17 @@ class AldwinHost:
                             if started is not None
                             else 0
                         )
+                        ok, summary = summarize_tool_result(
+                            res.name,
+                            res.content,
+                            is_error=res.is_error,
+                        )
                         await scope.emit(
                             ToolResultEvent(
                                 re=req.id,
                                 call_id=res.tool_call_id,
-                                ok=not res.is_error,
-                                summary=format_tool_summary(res.content),
+                                ok=ok,
+                                summary=summary,
                                 duration_ms=duration_ms,
                             )
                         )

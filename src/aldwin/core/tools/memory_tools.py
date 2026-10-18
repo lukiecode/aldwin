@@ -10,6 +10,7 @@ from typing import Any
 from agentling import Tool
 
 from aldwin.core.memory import DEFAULT_RECALL_DAYS, recall_notes, remember_note
+from aldwin.core.tools import ToolOutput
 
 
 class RememberTool(Tool):
@@ -55,14 +56,16 @@ class RememberTool(Tool):
             else "default"
         )
         try:
-            return await asyncio.to_thread(
+            status = await asyncio.to_thread(
                 remember_note,
                 self._home,
                 text,
                 session_id=session_id,
             )
+            return ToolOutput(status, summary=status, ok=True)
         except ValueError as exc:
-            return str(exc)
+            msg = str(exc)
+            return ToolOutput(msg, summary=msg, ok=False)
 
 
 class RecallTool(Tool):

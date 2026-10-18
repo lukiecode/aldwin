@@ -21,7 +21,7 @@ from aldwin.core.settings import (
     load_secrets,
     resolve_key,
 )
-from aldwin.core.tools import build_memory_tools, build_persona_tool
+from aldwin.core.tools import builtin_tools
 
 logger = logging.getLogger("aldwin.core.agent")
 
@@ -190,16 +190,15 @@ def build_agent(
     if tools is not None:
         active_tools: tuple[Tool, ...] = tuple(tools)
     else:
-        remember_tool, recall_tool = build_memory_tools(
-            root,
-            session_id_getter=session_id_getter,
+        active_tools = tuple(
+            builtin_tools(
+                effective_ask,
+                root,
+                secrets,
+                persona_cap=config.limits.persona_chars,
+                session_id_getter=session_id_getter,
+            )
         )
-        persona_tool = build_persona_tool(
-            effective_ask,
-            root,
-            cap=config.limits.persona_chars,
-        )
-        active_tools = (remember_tool, recall_tool, persona_tool)
 
     skill_result = load_skills(root / SKILLS_SUBDIR)
     context_manager = build_context(root, config.limits)
