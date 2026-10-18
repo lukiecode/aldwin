@@ -12,6 +12,7 @@ from aldwin.cli.theme import create_console
 from aldwin.client import KeyCheckResult, bootstrap, get_onboarding_status
 
 
+@pytest.mark.uninitialized_home
 async def test_onboarding_bad_key_then_good_key(
     aldwin_home: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -59,6 +60,7 @@ async def test_onboarding_bad_key_then_good_key(
     assert ((aldwin_home / "secrets.yaml").stat().st_mode & 0o777) == 0o600
 
 
+@pytest.mark.uninitialized_home
 async def test_onboarding_env_skip_error_variants_and_three_strikes(
     aldwin_home: Path,
     monkeypatch: pytest.MonkeyPatch,

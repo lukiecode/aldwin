@@ -13,6 +13,8 @@ from aldwin.core.agent import build_agent, new_session
 from aldwin.core.home import ensure_home
 from aldwin.core.models import KeyStatus, check_key, list_chat_models
 from aldwin.core.settings import AldwinConfig, SecretsConfig
+from aldwin.core.tools import ToolOutput
+from aldwin.core.tools.web_search import build_web_search_tool
 
 
 async def _deny_ask(_summary: str, _detail: str = "") -> bool:
@@ -51,3 +53,23 @@ async def test_openai_live_key_models_and_turn(aldwin_home: Path) -> None:
     assert final_event is not None
     assert final_event.status == "completed"
     assert "pong" in final_event.answer.lower()
+
+
+@pytest.mark.live
+async def test_tavily_live_search(aldwin_home: Path) -> None:
+    """FR-9 & TC-21: Real Tavily search returns numbered results when key is set."""
+    tavily_key = os.environ.get("TAVILY_API_KEY", "").strip()
+    if not tavily_key:
+        pytest.skip("TAVILY_API_KEY not set in environment.")
+
+    ensure_home(aldwin_home)
+    tool = build_web_search_tool(
+        home=aldwin_home,
+        secrets=SecretsConfig(tavily_api_key=SecretStr(tavily_key)),
+    )
+    res = await tool.call({"query": "Python release notes", "limit": 3})
+
+    assert isinstance(res, ToolOutput)
+    assert res.ok is True
+    assert "1." in str(res)
+    assert "results" in res.summary or "result" in res.summary

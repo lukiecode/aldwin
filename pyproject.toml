@@ -53,7 +53,8 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-m 'not live'"
 markers = [
-    "live: calls the real OpenAI API (run by hand)",
+    "live: calls the real OpenAI and Tavily APIs (run by hand)",
+    "uninitialized_home: do not call ensure_home() in the autouse aldwin_home fixture",
 ]
 
 [tool.ruff]

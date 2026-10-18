@@ -38,10 +38,30 @@ class FakeTurn:
         cls,
         chunks: str | Sequence[str],
         *,
+        deltas: int | None = None,
         usage: Usage | None = None,
     ) -> FakeTurn:
-        """Stream `chunks` (or a single string) as assistant text deltas."""
-        parts = [chunks] if isinstance(chunks, str) else list(chunks)
+        """Stream `chunks` (or a single string split into `deltas`) as text deltas."""
+        if isinstance(chunks, str):
+            if deltas is not None:
+                if deltas < 1 or len(chunks) < deltas:
+                    raise ValueError(
+                        f"Cannot split {len(chunks)}-char string into {deltas} deltas"
+                    )
+                if deltas > 1:
+                    step = len(chunks) // deltas
+                    parts = [
+                        chunks[
+                            i * step : (i + 1) * step if i < deltas - 1 else len(chunks)
+                        ]
+                        for i in range(deltas)
+                    ]
+                else:
+                    parts = [chunks]
+            else:
+                parts = [chunks]
+        else:
+            parts = list(chunks)
         return cls(
             chunks=parts,
             usage=usage or Usage(input_tokens=10, output_tokens=len(parts)),
@@ -66,14 +86,76 @@ class FakeTurn:
         )
 
     @classmethod
+    def final(
+        cls,
+        answer: str = "ok",
+        *,
+        usage: Usage | None = None,
+    ) -> FakeTurn:
+        """Emit a final assistant answer turn."""
+        return cls.text(answer, usage=usage)
+
+    @classmethod
     def error(cls, exc: Exception) -> FakeTurn:
         """Raise `exc` when the model is called."""
+        return cls(exc=exc)
+
+    @classmethod
+    def raise_(cls, exc: Exception) -> FakeTurn:
+        """Raise `exc` when the model is called (`FR-3` alias for `error`)."""
         return cls(exc=exc)
 
     @classmethod
     def hang(cls, *, prefix_chunks: Sequence[str] = ()) -> FakeTurn:
         """Stream `prefix_chunks`, set `hang_started`, and wait until cancelled."""
         return cls(chunks=list(prefix_chunks), hang_forever=True)
+
+
+def text(
+    chunks: str | Sequence[str],
+    *,
+    deltas: int | None = None,
+    usage: Usage | None = None,
+) -> FakeTurn:
+    """Build a scripted text turn (`FR-3`)."""
+    return FakeTurn.text(chunks, deltas=deltas, usage=usage)
+
+
+def tool_call(
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    call_id: str = "call_1",
+    content: str | None = None,
+    usage: Usage | None = None,
+) -> FakeTurn:
+    """Build a scripted tool-call turn (`FR-3`)."""
+    return FakeTurn.tool_call(
+        name,
+        arguments,
+        call_id=call_id,
+        content=content,
+        usage=usage,
+    )
+
+
+def final(
+    answer: str = "ok",
+    *,
+    usage: Usage | None = None,
+) -> FakeTurn:
+    """Build a scripted final-answer turn (`FR-3`)."""
+    return FakeTurn.final(answer, usage=usage)
+
+
+def raise_(exc: Exception) -> FakeTurn:
+    """Build a scripted exception turn (`FR-3`)."""
+    return FakeTurn.raise_(exc)
+
+
+def hang(*, prefix_chunks: Sequence[str] = ()) -> FakeTurn:
+    """Build a scripted hanging turn that waits until cancelled (`FR-3`)."""
+    return FakeTurn.hang(prefix_chunks=prefix_chunks)
 
 
 class FakeModel(Model):

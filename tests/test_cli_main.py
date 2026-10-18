@@ -16,6 +16,7 @@ from aldwin.client import BootstrapResult, get_onboarding_status
 runner = CliRunner()
 
 
+@pytest.mark.uninitialized_home
 def test_cli_main_routes_to_chat_and_version(
     aldwin_home: Path,
     monkeypatch: pytest.MonkeyPatch,

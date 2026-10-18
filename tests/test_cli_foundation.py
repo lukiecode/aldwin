@@ -20,6 +20,7 @@ from aldwin.core.home import STARTER_ASSETS, SUBDIRS, atomic_write
 runner = CliRunner()
 
 
+@pytest.mark.uninitialized_home
 def test_cli_first_run_creates_home(aldwin_home: Path) -> None:
     """TC-01: First run creates home (0700), copies assets, prints Created once."""
     assert not aldwin_home.exists()
@@ -41,6 +42,7 @@ def test_cli_first_run_creates_home(aldwin_home: Path) -> None:
         assert (dest.stat().st_mode & 0o777) == 0o600
 
 
+@pytest.mark.uninitialized_home
 def test_cli_second_run_is_quiet(aldwin_home: Path) -> None:
     """TC-02: Second aldwin run does not print Created and leaves files intact."""
     first = runner.invoke(app, [])
@@ -65,6 +67,7 @@ def test_cli_invalid_config_exits_cleanly(aldwin_home: Path) -> None:
     assert "Traceback" not in result.output
 
 
+@pytest.mark.uninitialized_home
 def test_cli_version_fast_and_side_effect_free(aldwin_home: Path) -> None:
     """TC-12: aldwin --version prints version, exits 0 in < 0.5 s, creates no home."""
     in_proc = runner.invoke(app, ["--version"])
@@ -102,6 +105,7 @@ def test_cli_help_lists_commands_and_options() -> None:
     assert "uninstall" in plain_output
 
 
+@pytest.mark.uninitialized_home
 def test_cli_windows_exits_with_friendly_message(
     aldwin_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -152,7 +156,7 @@ def test_cli_default_home_prints_tilde_path(
 ) -> None:
     """First run under default ~/.aldwin prints 'Created ~/.aldwin'."""
     fake_user_home = tmp_path / "user"
-    fake_user_home.mkdir()
+    fake_user_home.mkdir(exist_ok=True)
     monkeypatch.delenv("ALDWIN_HOME", raising=False)
     monkeypatch.setenv("HOME", str(fake_user_home))
 
