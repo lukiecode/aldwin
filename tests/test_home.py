@@ -24,7 +24,7 @@ def test_home_dir_defaults_to_dot_aldwin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_user_home = tmp_path / "user"
-    fake_user_home.mkdir()
+    fake_user_home.mkdir(exist_ok=True)
     monkeypatch.delenv("ALDWIN_HOME", raising=False)
     monkeypatch.setenv("HOME", str(fake_user_home))
 
@@ -36,7 +36,7 @@ def test_home_dir_uses_aldwin_home_env(
 ) -> None:
     """TC-04: ALDWIN_HOME overrides ~/.aldwin and leaves ~/.aldwin untouched."""
     fake_user_home = tmp_path / "fake_user"
-    fake_user_home.mkdir()
+    fake_user_home.mkdir(exist_ok=True)
     custom_home = tmp_path / "custom"
     monkeypatch.setenv("HOME", str(fake_user_home))
     monkeypatch.setenv("ALDWIN_HOME", str(custom_home))
@@ -53,7 +53,7 @@ def test_home_dir_expands_tilde_and_ignores_blank_env(
 ) -> None:
     """TC-15: home_dir() expands ~ and falls back on whitespace-only ALDWIN_HOME."""
     fake_user_home = tmp_path / "user"
-    fake_user_home.mkdir()
+    fake_user_home.mkdir(exist_ok=True)
     monkeypatch.setenv("HOME", str(fake_user_home))
 
     monkeypatch.setenv("ALDWIN_HOME", "~/my-aldwin")
@@ -67,7 +67,7 @@ def test_format_home_path_shortens_under_user_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_user_home = tmp_path / "user"
-    fake_user_home.mkdir()
+    fake_user_home.mkdir(exist_ok=True)
     monkeypatch.setenv("HOME", str(fake_user_home))
 
     assert format_home_path(fake_user_home / ".aldwin") == "~/.aldwin"
@@ -110,6 +110,7 @@ def test_atomic_write_cleans_up_temp_file_on_error(
     assert list(aldwin_home.glob(".*.tmp")) == []
 
 
+@pytest.mark.uninitialized_home
 def test_ensure_home_creates_subdirs_with_0700_and_copies_assets(
     aldwin_home: Path,
 ) -> None:
@@ -185,6 +186,7 @@ def test_base_instructions_stay_in_package(aldwin_home: Path) -> None:
     assert not (aldwin_home / "instructions.md").exists()
 
 
+@pytest.mark.uninitialized_home
 def test_ensure_home_concurrent_calls_succeed(aldwin_home: Path) -> None:
     """TC-27: Concurrent ensure_home() calls complete without race errors."""
     with ThreadPoolExecutor(max_workers=8) as pool:

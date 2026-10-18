@@ -1,0 +1,263 @@
+"""CLI rendering suite covering `FR-7`, `TC-08`, `TC-09`, and `TC-20`."""
+
+from __future__ import annotations
+
+import io
+from datetime import datetime, timezone
+
+from fakes.host import FakeHost
+
+from aldwin.cli.commands import handle_slash_command
+from aldwin.cli.render import ChatRenderer
+from aldwin.cli.theme import create_console
+from aldwin.protocol import (
+    ApprovalEvent,
+    DoneEvent,
+    ErrorCode,
+    HistoryEvent,
+    HistoryItem,
+    TokenUsage,
+    ToolCallEvent,
+    ToolResultEvent,
+)
+
+
+async def _noop_prompt(_label: str) -> str:
+    return ""
+
+
+def test_welcome_and_header_rendering() -> None:
+    """`render_welcome` renders onboarding welcome panel and chat session header."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+
+    renderer.render_welcome(first_run=True, model="gpt-4o", display_home="~/.aldwin")
+    renderer.render_welcome(first_run=False, model="gpt-4o", display_home="~/.aldwin")
+
+    text = console.export_text()
+    assert "Welcome to Aldwin" in text
+    assert "A personal assistant that runs on your computer." in text
+    assert "Aldwin · gpt-4o · ~/.aldwin" in text
+    assert 'Try: "what can you do?"  ·  /help  ·  Esc stops an answer' in text
+
+
+def test_dimmed_history_and_divider() -> None:
+    """`render_history` prints last 20 messages dimmed, divider, and interrupted."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+
+    items = [
+        HistoryItem(
+            role="user" if idx % 2 == 0 else "assistant",
+            text=f"turn-{idx}",
+        )
+        for idx in range(20)
+    ]
+    now = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    renderer.render_history(
+        HistoryEvent(re="h1", messages=items, interrupted=True),
+        updated_at="2026-10-17T18:02:00+00:00",
+        now=now,
+    )
+
+    text = console.export_text()
+    assert "› turn-0" in text
+    assert "turn-19" in text
+    assert text.index("turn-0") < text.index("turn-19")
+    assert "continuing from yesterday 18:02" in text
+    assert "Your last request was interrupted. Say continue to pick it up." in text
+
+
+def test_streamed_markdown_blocks_including_code_fence() -> None:
+    """Streamed markdown prints completed blocks once and keeps code fences intact."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+
+    now = 10.0
+    turn = renderer.start_turn(clock=lambda: now)
+    turn.on_text("Opening paragraph.\n\n")
+    turn.on_text("```python\ndef compute(x: int) -> int:\n\n    return x * 2\n```\n\n")
+    turn.on_text("Closing summary.")
+    now = 14.0
+    turn.finish_done(
+        DoneEvent(
+            re="r1",
+            reason="answered",
+            usage=TokenUsage(input_tokens=800, output_tokens=300),
+        )
+    )
+
+    text = console.export_text()
+    assert text.count("Opening paragraph.") == 1
+    assert text.count("def compute(x: int) -> int:") == 1
+    assert text.count("Closing summary.") == 1
+    assert (
+        text.index("Opening paragraph.")
+        < text.index("def compute(x: int) -> int:")
+        < text.index("Closing summary.")
+    )
+
+
+def test_render_tool_card_ok_and_fail_exact_text() -> None:
+    """TC-08: Tool cards render exact `✓ web_search 1.2s · 3 results` and `✗` copy."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+
+    turn = renderer.start_turn()
+    turn.on_tool_call(
+        ToolCallEvent(re="r1", call_id="c1", name="web_search", args_preview="")
+    )
+    turn.on_tool_result(
+        ToolResultEvent(
+            re="r1",
+            call_id="c1",
+            ok=True,
+            summary="3 results",
+            duration_ms=1200,
+        )
+    )
+    turn.on_tool_call(
+        ToolCallEvent(re="r1", call_id="c2", name="web_fetch", args_preview="")
+    )
+    turn.on_tool_result(
+        ToolResultEvent(
+            re="r1",
+            call_id="c2",
+            ok=False,
+            summary="refused: private address",
+            duration_ms=15,
+        )
+    )
+    turn.finish_done(DoneEvent(re="r1", reason="answered"))
+
+    raw_text = console.export_text()
+    assert "✓ web_search  1.2s · 3 results" in raw_text
+    assert "✗ web_fetch  refused: private address" in raw_text
+
+    normalized_lines = [" ".join(line.split()) for line in raw_text.splitlines()]
+    assert "✓ web_search 1.2s · 3 results" in normalized_lines
+    assert "✗ web_fetch refused: private address" in normalized_lines
+
+
+def test_approval_panel_end_line_and_stopped_line() -> None:
+    """Approval panel, `✓ done` footer, and `(stopped)` marker render exact copy."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+
+    now = 100.0
+    turn1 = renderer.start_turn(clock=lambda: now)
+    turn1.on_tool_call(
+        ToolCallEvent(re="r1", call_id="c1", name="run_command", args_preview="df -h")
+    )
+    approval = ApprovalEvent(
+        re="r1",
+        approval_id="ap_1",
+        summary="Run this command?",
+        detail="df -h",
+    )
+    turn1.pause_for_approval(approval)
+    turn1.resume_after_approval()
+    turn1.on_tool_result(
+        ToolResultEvent(
+            re="r1", call_id="c1", ok=True, summary="exit 0", duration_ms=200
+        )
+    )
+    turn1.on_text("41 GB free.")
+    now = 104.0
+    turn1.finish_done(
+        DoneEvent(
+            re="r1",
+            reason="answered",
+            usage=TokenUsage(input_tokens=800, output_tokens=300),
+        )
+    )
+
+    turn2 = renderer.start_turn(clock=lambda: now)
+    turn2.on_text("Partial text before Esc")
+    turn2.finish_done(DoneEvent(re="r2", reason="stopped"))
+
+    text = console.export_text()
+    assert "Run this command?" in text
+    assert "df -h" in text
+    assert "[y/n]" in text
+    assert "✓ done · 4s · 1 tool · 1.1k tokens" in text
+    assert "Partial text before Esc (stopped)" in text
+    assert "✓ done · 0s · 0 tools (stopped)" in text
+
+
+def test_each_error_code_copy() -> None:
+    """Every `ErrorCode` renders its friendly one-line house copy and next step."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+
+    expected: list[tuple[ErrorCode, str]] = [
+        ("auth_failed", "Your OpenAI key was rejected. Run `aldwin setup`."),
+        ("rate_limited", "OpenAI is rate-limiting requests right now."),
+        ("model_unavailable", "Can't reach OpenAI. Check your connection"),
+        ("unknown_model", "Use /model to pick another."),
+        ("busy", "Press Esc to stop it first."),
+        ("internal", "Something went wrong. Details are in ~/.aldwin/logs/aldwin.log"),
+    ]
+    for code, _phrase in expected:
+        renderer.render_error(code, "internal details")
+
+    text = console.export_text()
+    for _code, phrase in expected:
+        assert phrase in text
+
+
+def test_plain_mode_output_contains_no_ansi_escape_codes() -> None:
+    """TC-09: Plain mode rendering contains zero `\\x1b[` ANSI escape sequences."""
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+
+    renderer.render_welcome(first_run=False, model="gpt-4o", display_home="~/.aldwin")
+    renderer.render_history(
+        HistoryEvent(
+            re="h1",
+            messages=[HistoryItem(role="user", text="hello")],
+            interrupted=False,
+        )
+    )
+    turn = renderer.start_turn()
+    turn.on_text("Plain answer paragraph.")
+    turn.on_tool_call(
+        ToolCallEvent(re="r1", call_id="c1", name="web_search", args_preview="python")
+    )
+    turn.on_tool_result(
+        ToolResultEvent(
+            re="r1", call_id="c1", ok=True, summary="3 results", duration_ms=1200
+        )
+    )
+    turn.finish_done(DoneEvent(re="r1", reason="answered"))
+    renderer.render_error("model_unavailable", "offline")
+
+    raw = buf.getvalue()
+    assert "\x1b[" not in raw
+    assert "\a" not in raw
+    assert "Plain answer paragraph." in raw
+    assert "✓ web_search  1.2s · 3 results" in raw
+
+
+async def test_unknown_slash_command_with_fake_host(fake_host: FakeHost) -> None:
+    """Unknown slash command prints help hint and sends zero turns to `fake_host`."""
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+
+    should_exit = await handle_slash_command(
+        "/unknown",
+        client=fake_host,
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    assert should_exit is False
+    assert fake_host.requests == []
+    assert "Unknown command. Type /help." in console.export_text()

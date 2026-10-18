@@ -24,8 +24,8 @@ from aldwin.protocol import (
 )
 
 
-class FakeClient:
-    """Scriptable `AldwinClient` test double (`aldwin-testing`)."""
+class FakeHost:
+    """Scriptable host/client test double for the CLI (`FR-5`, `aldwin-testing`)."""
 
     def __init__(
         self,
@@ -53,6 +53,7 @@ class FakeClient:
         self.stop_calls = 0
         self.model_switches: list[str] = []
         self.new_conversations = 0
+        self.requests: list[tuple[object, ...]] = []
 
         self._scripted_turns: list[list[Event]] = []
         self.hang_until_stopped = False
@@ -129,14 +130,16 @@ class FakeClient:
 
     async def connect(self) -> DoneEvent:
         self.connected = True
+        self.requests.append(("connect",))
         return DoneEvent(re="req_hello", reason="ok")
 
     async def history(self, limit: int = 20) -> HistoryEvent:
-        _ = limit
+        self.requests.append(("history", limit))
         return self.history_event
 
     async def turn(self, text: str) -> AsyncGenerator[Event, None]:
         self.turns.append(text)
+        self.requests.append(("turn", text))
         self._stop_gate.clear()
         self.turn_started_event.set()
         events = (
@@ -155,6 +158,7 @@ class FakeClient:
 
     async def stop(self) -> DoneEvent | ErrorEvent:
         self.stop_calls += 1
+        self.requests.append(("stop",))
         self._stop_gate.set()
         return DoneEvent(re="req_stop", reason="ok")
 
@@ -164,10 +168,12 @@ class FakeClient:
         answer: ApprovalAnswer,
     ) -> DoneEvent | ErrorEvent:
         self.approvals.append((approval_id, answer))
+        self.requests.append(("approve", approval_id, answer))
         return DoneEvent(re="req_approve", reason="ok")
 
     async def set_model(self, name: str) -> DoneEvent | ErrorEvent:
         cleaned = name.strip()
+        self.requests.append(("set_model", cleaned))
         if cleaned not in self.available_models:
             return ErrorEvent(
                 re="req_model",
@@ -180,6 +186,7 @@ class FakeClient:
 
     async def new_conversation(self) -> None:
         self.new_conversations += 1
+        self.requests.append(("new_conversation",))
         self.session_id = f"2026-10-18_new{self.new_conversations:02d}"
 
     async def list_models(self) -> list[str]:
@@ -199,3 +206,6 @@ class FakeClient:
 
     async def close(self) -> None:
         self.closed = True
+
+
+FakeClient = FakeHost
