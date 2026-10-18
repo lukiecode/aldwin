@@ -7,8 +7,15 @@ from typing import TYPE_CHECKING, Any
 from aldwin.host.in_process import (
     BootstrapResult,
     ClientBootstrapError,
+    MemorySummary,
+    NoteEntry,
+    PersonaSummary,
     PlatformNotSupportedError,
     bootstrap_host,
+    get_memory_summary,
+    get_persona_summary,
+    get_persona_text,
+    pop_profile_truncation_warning,
 )
 
 if TYPE_CHECKING:
@@ -33,7 +40,14 @@ __all__ = [
     "AldwinClient",
     "BootstrapResult",
     "ClientBootstrapError",
+    "MemorySummary",
+    "NoteEntry",
+    "PersonaSummary",
     "PlatformNotSupportedError",
     "ProtocolError",
     "bootstrap",
+    "get_memory_summary",
+    "get_persona_summary",
+    "get_persona_text",
+    "pop_profile_truncation_warning",
 ]

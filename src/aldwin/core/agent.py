@@ -21,6 +21,7 @@ from aldwin.core.settings import (
     load_secrets,
     resolve_key,
 )
+from aldwin.core.tools import build_memory_tools, build_persona_tool
 
 logger = logging.getLogger("aldwin.core.agent")
 
@@ -170,10 +171,11 @@ def build_agent(
     model: Model | None = None,
     tools: Sequence[Tool] | None = None,
     on_retry: RetryCallback | None = None,
+    session_id_getter: Callable[[], str] | None = None,
 ) -> Agent:
     """Assemble Aldwin's `Agent` from `config`, `secrets`, and `ask` (`FR-1`)."""
-    del ask  # Bound to built-in tools when ENG-381/ENG-382 wire `builtin_tools`.
     root = (home if home is not None else home_dir()).expanduser().resolve()
+    effective_ask = ask or _deny_all_ask
 
     if model is not None:
         active_model: Model = model
@@ -185,12 +187,26 @@ def build_agent(
             on_retry=on_retry,
         )
 
+    if tools is not None:
+        active_tools: tuple[Tool, ...] = tuple(tools)
+    else:
+        remember_tool, recall_tool = build_memory_tools(
+            root,
+            session_id_getter=session_id_getter,
+        )
+        persona_tool = build_persona_tool(
+            effective_ask,
+            root,
+            cap=config.limits.persona_chars,
+        )
+        active_tools = (remember_tool, recall_tool, persona_tool)
+
     skill_result = load_skills(root / SKILLS_SUBDIR)
     context_manager = build_context(root, config.limits)
 
     agent = Agent(
         model=active_model,
-        tools=tuple(tools) if tools is not None else (),
+        tools=active_tools,
         skills=skill_result.valid,
         instructions=load_base_instructions(),
         max_steps=config.limits.max_steps,

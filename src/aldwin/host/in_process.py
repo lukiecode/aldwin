@@ -13,6 +13,13 @@ from typing import TYPE_CHECKING, Protocol
 
 from aldwin.core.home import ensure_home, format_home_path, home_dir
 from aldwin.core.logging import setup_logging
+from aldwin.core.memory import (
+    MemorySummary,
+    NoteEntry,
+    memory_summary,
+    pop_profile_truncation_warning,
+)
+from aldwin.core.persona import PersonaSummary, persona_summary, persona_text
 from aldwin.core.settings import ConfigError, load_config
 
 if TYPE_CHECKING:
@@ -21,6 +28,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger("aldwin.host")
 
 NewConversationHandler = Callable[[], Awaitable[None]]
+
+
+def get_memory_summary(home: Path | None = None) -> MemorySummary:
+    """Return profile and notes summary data for `/memory` (`FR-10`)."""
+    root = (home if home is not None else home_dir()).expanduser().resolve()
+    config = load_config(root)
+    return memory_summary(root, config.limits)
+
+
+def get_persona_text(home: Path | None = None) -> str:
+    """Return the active `persona.md` text for `/persona` (`FR-10`)."""
+    return persona_text(home)
+
+
+def get_persona_summary(home: Path | None = None) -> PersonaSummary:
+    """Return path, text, and cap metadata for `/persona` (`FR-10`)."""
+    root = (home if home is not None else home_dir()).expanduser().resolve()
+    config = load_config(root)
+    return persona_summary(root, cap=config.limits.persona_chars)
 
 
 class PlatformNotSupportedError(Exception):
@@ -193,3 +219,21 @@ class InProcessTransport:
         self._closed = True
         await self._inbound.put(None)
         await self._outbound.put(None)
+
+
+__all__ = [
+    "BootstrapResult",
+    "ClientBootstrapError",
+    "ClientTransport",
+    "InProcessTransport",
+    "MemorySummary",
+    "NewConversationHandler",
+    "NoteEntry",
+    "PersonaSummary",
+    "PlatformNotSupportedError",
+    "bootstrap_host",
+    "get_memory_summary",
+    "get_persona_summary",
+    "get_persona_text",
+    "pop_profile_truncation_warning",
+]

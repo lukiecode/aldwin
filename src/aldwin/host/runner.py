@@ -35,6 +35,7 @@ from aldwin.core.agent import (
 )
 from aldwin.core.models import RetryingModel, classify_model_error
 from aldwin.core.settings import load_config, load_secrets, update_config_model
+from aldwin.core.tools import RememberTool
 from aldwin.host.in_process import InProcessTransport
 from aldwin.host.sessions import (
     MAX_PREVIEW_CHARS,
@@ -275,10 +276,16 @@ class AldwinHost:
         self._transport.set_new_conversation_handler(self.new_conversation)
 
     def _build_and_attach_agent(self, model_name: str) -> Agent:
-        """Build an `Agent` and attach the host's retry status callback."""
+        """Build an `Agent` and attach the host's retry and session callbacks."""
         agent = self._agent_builder(model_name, self.ask)
         if isinstance(agent.model, RetryingModel) and agent.model.on_retry is None:
             agent.model.on_retry = self.on_retry
+        for tool_obj in agent._base_tools.values():
+            if (
+                isinstance(tool_obj, RememberTool)
+                and tool_obj._session_id_getter is None
+            ):
+                tool_obj._session_id_getter = lambda: self._stored_session.meta.id
         return agent
 
     async def on_retry(
