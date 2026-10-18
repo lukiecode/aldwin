@@ -21,6 +21,7 @@ from aldwin.core.memory import (
 )
 from aldwin.core.persona import PersonaSummary, persona_summary, persona_text
 from aldwin.core.settings import ConfigError, load_config
+from aldwin.core.tools import ToolInfo, list_builtin_tools
 
 if TYPE_CHECKING:
     from aldwin.protocol import Event, Request
@@ -47,6 +48,11 @@ def get_persona_summary(home: Path | None = None) -> PersonaSummary:
     root = (home if home is not None else home_dir()).expanduser().resolve()
     config = load_config(root)
     return persona_summary(root, cap=config.limits.persona_chars)
+
+
+def get_builtin_tools() -> list[ToolInfo]:
+    """Return one-line descriptions of the built-in tools for `/tools` (`FR-7`)."""
+    return list_builtin_tools()
 
 
 class PlatformNotSupportedError(Exception):
@@ -231,7 +237,9 @@ __all__ = [
     "NoteEntry",
     "PersonaSummary",
     "PlatformNotSupportedError",
+    "ToolInfo",
     "bootstrap_host",
+    "get_builtin_tools",
     "get_memory_summary",
     "get_persona_summary",
     "get_persona_text",

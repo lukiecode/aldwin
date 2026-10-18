@@ -10,6 +10,7 @@ from typing import Any
 from agentling import Tool
 
 from aldwin.core.persona import DEFAULT_PERSONA_CAP, write_persona
+from aldwin.core.tools import ToolOutput
 
 AskFn = Callable[[str, str], Awaitable[bool]]
 
@@ -51,18 +52,20 @@ class SetPersonaTool(Tool):
 
     async def forward(self, new_text: str) -> str:  # type: ignore[override]
         if not isinstance(new_text, str) or "\x00" in new_text:
-            return "Invalid persona: text must be a valid string."
+            msg = "Invalid persona: text must be a valid string."
+            return ToolOutput(msg, summary=msg, ok=False)
 
         cleaned = new_text.strip()
         if not cleaned or len(cleaned) > self._cap:
-            return (
+            msg = (
                 f"Invalid persona: must be between 1 and {self._cap:,} characters "
                 f"(got {len(cleaned)})."
             )
+            return ToolOutput(msg, summary=msg, ok=False)
 
         approved = await self._ask("Update persona?", cleaned)
         if not approved:
-            return "user declined"
+            return ToolOutput("user declined", summary="user declined", ok=False)
 
         await asyncio.to_thread(
             write_persona,
@@ -70,7 +73,7 @@ class SetPersonaTool(Tool):
             cleaned,
             cap=self._cap,
         )
-        return "persona updated"
+        return ToolOutput("persona updated", summary="persona updated", ok=True)
 
 
 def build_persona_tool(
