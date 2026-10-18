@@ -115,13 +115,36 @@ def test_cli_windows_exits_with_friendly_message(
     assert not aldwin_home.exists()
 
 
-def test_cli_subcommands_stub_output() -> None:
-    """Stub setup and uninstall commands exit 0 cleanly."""
-    setup_res = runner.invoke(app, ["setup"])
-    assert setup_res.exit_code == 0
+def test_cli_subcommands_stub_output(
+    aldwin_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """setup and uninstall commands exit 0 cleanly when given valid input."""
+    import aldwin.cli.onboarding as onboarding_mod
 
-    uninstall_res = runner.invoke(app, ["uninstall", "--purge"])
-    assert uninstall_res.exit_code == 0
+    async def _always_ok(_key: str) -> onboarding_mod.KeyCheckResult:
+        return "ok"
+
+    async def _models(_key: str | None, _home: Path | None) -> list[str]:
+        return ["gpt-4o"]
+
+    monkeypatch.setattr(onboarding_mod, "check_openai_key", _always_ok)
+    monkeypatch.setattr(onboarding_mod, "list_available_models", _models)
+
+    setup_res = runner.invoke(
+        app,
+        ["setup", "--plain"],
+        input="sk-test-12345678\n\n1\n",
+    )
+    assert setup_res.exit_code == 0, setup_res.output
+
+    uninstall_res = runner.invoke(
+        app,
+        ["uninstall", "--purge"],
+        input=f"y\n{aldwin_home.name}\n",
+    )
+    assert uninstall_res.exit_code == 0, uninstall_res.output
+    assert not aldwin_home.exists()
 
 
 def test_cli_default_home_prints_tilde_path(

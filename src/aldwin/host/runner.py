@@ -78,6 +78,11 @@ def format_args_preview(arguments: dict[str, Any]) -> str:
     """Format tool call arguments as a single line capped at 120 characters."""
     if not arguments:
         return ""
+    if "new_text" in arguments and isinstance(arguments["new_text"], str):
+        raw_text = arguments["new_text"].strip()
+        line_count = len(raw_text.splitlines()) if raw_text else 0
+        unit = "line" if line_count == 1 else "lines"
+        return f"persona.md · {line_count} {unit}"
     raw = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
     return shorten_one_line(raw, MAX_PREVIEW_CHARS)
 
@@ -187,6 +192,7 @@ class ApprovalBroker:
     def __init__(self, send_event: EventSender) -> None:
         self._send_event = send_event
         self._pending: dict[str, asyncio.Future[bool]] = {}
+        self._lock = asyncio.Lock()
 
     @property
     def has_pending(self) -> bool:
@@ -194,23 +200,24 @@ class ApprovalBroker:
         return bool(self._pending)
 
     async def ask(self, re: str, summary: str, detail: str = "") -> bool:
-        """Emit `ApprovalEvent` and await the door's `yes`/`no` answer."""
-        approval_id = f"ap_{uuid4().hex[:12]}"
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[bool] = loop.create_future()
-        self._pending[approval_id] = future
-        try:
-            await self._send_event(
-                ApprovalEvent(
-                    re=re,
-                    approval_id=approval_id,
-                    summary=summary,
-                    detail=detail,
+        """Emit `ApprovalEvent` one at a time and await the door's `yes`/`no` answer."""
+        async with self._lock:
+            approval_id = f"ap_{uuid4().hex[:12]}"
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[bool] = loop.create_future()
+            self._pending[approval_id] = future
+            try:
+                await self._send_event(
+                    ApprovalEvent(
+                        re=re,
+                        approval_id=approval_id,
+                        summary=summary,
+                        detail=detail,
+                    )
                 )
-            )
-            return await future
-        finally:
-            self._pending.pop(approval_id, None)
+                return await future
+            finally:
+                self._pending.pop(approval_id, None)
 
     def resolve(self, approval_id: str, answer: ApprovalAnswer) -> bool:
         """Resolve a pending approval future; return `False` if unknown."""
@@ -263,6 +270,7 @@ class AldwinHost:
         self._welcomed = False
         self._active_turn_id: str | None = None
         self._active_turn_scope: RequestScope | None = None
+        self._last_approval_end_time: float = 0.0
         self._turn_task: asyncio.Task[None] | None = None
         self._serve_task: asyncio.Task[None] | None = None
 
@@ -333,7 +341,10 @@ class AldwinHost:
     async def ask(self, summary: str, detail: str = "") -> bool:
         """Injected into tools so they can request user approval via the host."""
         re_id = self._active_turn_id or "req_turn"
-        return await self._approvals.ask(re=re_id, summary=summary, detail=detail)
+        try:
+            return await self._approvals.ask(re=re_id, summary=summary, detail=detail)
+        finally:
+            self._last_approval_end_time = time.monotonic()
 
     async def new_conversation(self) -> None:
         """Close the current session file and start a fresh conversation (`FR-14`)."""
@@ -532,11 +543,16 @@ class AldwinHost:
                     elif isinstance(ev, AgentlingToolResultEvent):
                         res = ev.result
                         started = tool_start_times.pop(res.tool_call_id, None)
-                        duration_ms = (
-                            max(0, int((time.monotonic() - started) * 1000))
-                            if started is not None
-                            else 0
-                        )
+                        explicit_ms = getattr(res.content, "duration_ms", None)
+                        if isinstance(explicit_ms, int):
+                            duration_ms = max(0, explicit_ms)
+                        elif started is not None:
+                            effective_start = max(started, self._last_approval_end_time)
+                            duration_ms = max(
+                                0, int((time.monotonic() - effective_start) * 1000)
+                            )
+                        else:
+                            duration_ms = 0
                         ok, summary = summarize_tool_result(
                             res.name,
                             res.content,

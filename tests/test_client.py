@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from agentling import Agent
 from agentling.memory import ActionStep, TaskStep, ToolResult
 from agentling.models import ChatMessage, ToolCall
@@ -159,3 +160,69 @@ async def test_client_cleans_up_queue_when_caller_breaks_early(
     finally:
         await client.close()
         await host.stop_host()
+
+
+async def test_open_in_process_client_and_inspect_helpers(
+    aldwin_home: Path,
+) -> None:
+    """`open_in_process_client` and client inspect helpers expose host state."""
+    from aldwin.client import open_in_process_client, save_setup
+
+    save_setup(
+        openai_api_key="sk-proj-test12345678",
+        tavily_api_key="tvly-dev-test87654321",
+        model="gpt-4o",
+        home=aldwin_home,
+    )
+
+    async with open_in_process_client(home=aldwin_home) as client:
+        # Calling connect() a second time is idempotent and returns cached DoneEvent
+        second_hello = await client.connect()
+        assert isinstance(second_hello, DoneEvent)
+        assert second_hello.reason == "ok"
+        assert client.model == "gpt-4o"
+        assert client.session_id
+        assert client.updated_at is not None
+
+        persona = client.persona_summary()
+        assert persona.size_chars > 0
+        mem = client.memory_summary()
+        assert mem.profile_cap_chars == 4000
+        skills = client.skills_report()
+        assert any(s.name == "using-aldwin" for s in skills.valid)
+        tools = client.tools_summary()
+        assert len(tools) == 6
+
+
+async def test_in_process_key_check_and_model_list_wrappers(
+    aldwin_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`check_openai_key` and `list_available_models` map `core.models` results."""
+    import aldwin.core.models as core_models
+    from aldwin.client import check_openai_key, list_available_models
+
+    statuses = iter(
+        [
+            core_models.KeyStatus.OK,
+            core_models.KeyStatus.NO_ACCESS,
+            core_models.KeyStatus.NETWORK_ERROR,
+            core_models.KeyStatus.INVALID,
+        ]
+    )
+
+    async def fake_check_key(_key: str) -> core_models.KeyStatus:
+        return next(statuses)
+
+    monkeypatch.setattr(core_models, "check_key", fake_check_key)
+    assert await check_openai_key("k") == "ok"
+    assert await check_openai_key("k") == "no_access"
+    assert await check_openai_key("k") == "network_error"
+    assert await check_openai_key("k") == "invalid"
+
+    async def fake_list_models(_key: str) -> list[str]:
+        return ["gpt-4.1", "o3-mini"]
+
+    monkeypatch.setattr(core_models, "list_chat_models", fake_list_models)
+    models = await list_available_models(api_key="sk-test", home=aldwin_home)
+    assert models == ["gpt-4o", "gpt-4.1", "o3-mini"]

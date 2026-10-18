@@ -46,6 +46,7 @@ class ToolOutput(str):
 
     summary: str
     ok: bool
+    duration_ms: int | None
 
     def __new__(
         cls,
@@ -53,10 +54,12 @@ class ToolOutput(str):
         *,
         summary: str = "",
         ok: bool = True,
+        duration_ms: int | None = None,
     ) -> ToolOutput:
         instance = super().__new__(cls, content)
         instance.summary = summary
         instance.ok = ok
+        instance.duration_ms = duration_ms
         return instance
 
     def __str__(self) -> str:
@@ -67,6 +70,7 @@ class ToolOutput(str):
             super().__str__(),
             summary=getattr(self, "summary", ""),
             ok=getattr(self, "ok", True),
+            duration_ms=getattr(self, "duration_ms", None),
         )
 
     def __add__(self, other: str) -> ToolOutput:
@@ -74,6 +78,7 @@ class ToolOutput(str):
             super().__add__(other),
             summary=self.summary,
             ok=self.ok,
+            duration_ms=self.duration_ms,
         )
 
 

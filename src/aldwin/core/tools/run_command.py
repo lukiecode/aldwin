@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import signal
+import time
 from asyncio.subprocess import Process
 from collections.abc import Mapping
 from pathlib import Path
@@ -444,8 +445,10 @@ class RunCommandTool(Tool):
                 "user declined",
                 summary="declined",
                 ok=False,
+                duration_ms=0,
             )
 
+        exec_started = time.monotonic()
         work_dir = (self._cwd if self._cwd is not None else Path.cwd()).resolve()
         clean_env = scrub_env(self._env)
 
@@ -465,6 +468,7 @@ class RunCommandTool(Tool):
                 f"command failed to start: {reason}",
                 summary=f"failed: {reason}",
                 ok=False,
+                duration_ms=max(0, int((time.monotonic() - exec_started) * 1000)),
             )
 
         try:
@@ -478,11 +482,13 @@ class RunCommandTool(Tool):
                 f"Command timed out after {self._timeout:g}s and was killed.",
                 summary=f"timed out ({self._timeout:g}s)",
                 ok=False,
+                duration_ms=max(0, int((time.monotonic() - exec_started) * 1000)),
             )
         except asyncio.CancelledError:
             await asyncio.shield(_terminate_process_group(proc))
             raise
 
+        elapsed_ms = max(0, int((time.monotonic() - exec_started) * 1000))
         exit_code = proc.returncode if proc.returncode is not None else -1
         decoded = stdout_bytes.decode("utf-8", errors="replace").rstrip("\n")
         truncated = truncate_command_output(decoded)
@@ -493,6 +499,7 @@ class RunCommandTool(Tool):
             full_output,
             summary=f"exit {exit_code}",
             ok=(exit_code == 0),
+            duration_ms=elapsed_ms,
         )
 
 

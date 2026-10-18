@@ -1,0 +1,338 @@
+"""Integration and async key-listener tests for Aldwin's chat screen."""
+
+from __future__ import annotations
+
+import asyncio
+import io
+import time
+from pathlib import Path
+
+from fakes.host import FakeClient
+from prompt_toolkit.input.defaults import create_pipe_input
+
+from aldwin.cli.chat_screen import (
+    TurnKeyListener,
+    format_bottom_toolbar,
+    read_approval_key,
+    run_chat,
+)
+from aldwin.cli.theme import create_console
+from aldwin.client import bootstrap
+from aldwin.protocol import (
+    ApprovalEvent,
+    DoneEvent,
+    TextEvent,
+    TokenUsage,
+    ToolCallEvent,
+    ToolResultEvent,
+)
+
+
+async def test_chat_approval_yes_sends_approve_and_resumes(aldwin_home: Path) -> None:
+    """TC-07: approval event + y shows panel, rings bell, approves, and resumes."""
+    _ = aldwin_home
+    boot = bootstrap(plain=False)
+    client = FakeClient()
+    client.queue_turn(
+        [
+            ToolCallEvent(
+                re="r1",
+                call_id="c1",
+                name="run_command",
+                args_preview="df -h",
+            ),
+            ApprovalEvent(
+                re="r1",
+                approval_id="ap_1",
+                summary="Run this command?",
+                detail="df -h",
+            ),
+            ToolResultEvent(
+                re="r1",
+                call_id="c1",
+                ok=True,
+                summary="exit 0",
+                duration_ms=200,
+            ),
+            TextEvent(re="r1", delta="You have 41 GB free."),
+            DoneEvent(
+                re="r1",
+                reason="answered",
+                usage=TokenUsage(input_tokens=800, output_tokens=300),
+            ),
+        ]
+    )
+
+    buf = io.StringIO()
+    console = create_console(plain=False, width=80, record=True, file=buf)
+
+    with create_pipe_input() as pipe_in:
+        pipe_in.send_text("is my disk nearly full?\r")
+
+        async def _send_approval_and_exit() -> None:
+            await client.approval_emitted_event.wait()
+            await asyncio.sleep(0.02)
+            pipe_in.send_text("y")
+            await asyncio.sleep(0.05)
+            pipe_in.send_text("/exit\r")
+
+        feeder = asyncio.create_task(_send_approval_and_exit())
+        rc = await run_chat(
+            boot,
+            client=client,
+            console=console,
+            input_dev=pipe_in,
+        )
+        await feeder
+
+    assert rc == 0
+    assert client.approvals == [("ap_1", "yes")]
+    assert "\a" in buf.getvalue()
+    text = console.export_text()
+    assert "Run this command?" in text
+    assert "df -h" in text
+    assert "[y/n]" in text
+    assert "You have 41 GB free." in text
+    assert "Saved. See you." in text
+
+
+async def test_chat_approval_escape_and_enter_send_no() -> None:
+    """TC-08: read_approval_key resolves Esc, n, and Enter as 'no'."""
+    with create_pipe_input() as pipe_esc:
+        pipe_esc.send_text("\x1b")
+        ans_esc = await asyncio.wait_for(read_approval_key(pipe_esc), timeout=0.5)
+        assert ans_esc == "no"
+
+    with create_pipe_input() as pipe_n:
+        pipe_n.send_text("n")
+        ans_n = await asyncio.wait_for(read_approval_key(pipe_n), timeout=0.5)
+        assert ans_n == "no"
+
+    with create_pipe_input() as pipe_enter:
+        pipe_enter.send_text("\r")
+        ans_enter = await asyncio.wait_for(read_approval_key(pipe_enter), timeout=0.5)
+        assert ans_enter == "no"
+
+
+async def test_escape_during_stream_stops_under_one_second(aldwin_home: Path) -> None:
+    """TC-09: Esc during stream sends stop in < 1 s and prints (stopped)."""
+    _ = aldwin_home
+    boot = bootstrap(plain=True)
+    client = FakeClient()
+    client.hang_until_stopped = True
+    client.queue_turn([TextEvent(re="r1", delta="Partial answer before stop")])
+
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+
+    with create_pipe_input() as pipe_in:
+        pipe_in.send_text("tell me a long story\r")
+        elapsed = 0.0
+
+        async def _press_esc_then_exit() -> None:
+            nonlocal elapsed
+            await client.turn_started_event.wait()
+            await asyncio.sleep(0.02)
+            t0 = time.perf_counter()
+            pipe_in.send_text("\x1b")
+            await client._stop_gate.wait()
+            elapsed = time.perf_counter() - t0
+            await asyncio.sleep(0.05)
+            pipe_in.send_text("/exit\r")
+
+        feeder = asyncio.create_task(_press_esc_then_exit())
+        rc = await run_chat(
+            boot,
+            client=client,
+            console=console,
+            input_dev=pipe_in,
+        )
+        await feeder
+
+    assert rc == 0
+    assert client.stop_calls == 1
+    assert elapsed < 1.0, f"Esc stop took {elapsed:.3f}s (budget < 1.0s)"
+    text = console.export_text()
+    assert "Partial answer before stop *(stopped)*" in text
+    assert "(stopped)" in text
+
+
+async def test_prompt_input_bindings_empty_ignored_and_toolbar(
+    aldwin_home: Path,
+) -> None:
+    """TC-20: Alt+Enter inserts newline, empty input ignored, toolbar formatted."""
+    _ = aldwin_home
+    assert (
+        format_bottom_toolbar("gpt-4o", "2026-10-18_3f2a9b1c", 6200)
+        == " gpt-4o · 95% context left   ? shortcuts · esc stop "
+    )
+
+    boot = bootstrap(plain=True)
+    client = FakeClient()
+    client.queue_turn([DoneEvent(re="r1", reason="answered")])
+
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+
+    with create_pipe_input() as pipe_in:
+        pipe_in.send_text("   \r")
+        pipe_in.send_text("line1\x1b\rline2\r")
+        pipe_in.send_text("/exit\r")
+        rc = await run_chat(
+            boot,
+            client=client,
+            console=console,
+            input_dev=pipe_in,
+        )
+
+    assert rc == 0
+    assert client.turns == ["line1\nline2"]
+
+
+async def test_turn_key_listener_ignores_arrow_sequences_and_flushes_bare_escape() -> (
+    None
+):
+    """TC-23: TurnKeyListener ignores \\x1b[A arrow sequence and flushes bare \\x1b."""
+    escape_calls = 0
+    ctrl_c_calls = 0
+
+    async def on_esc() -> None:
+        nonlocal escape_calls
+        escape_calls += 1
+
+    async def on_ctrl_c() -> None:
+        nonlocal ctrl_c_calls
+        ctrl_c_calls += 1
+
+    with create_pipe_input() as pipe_in:
+        async with TurnKeyListener(
+            pipe_in,
+            on_escape=on_esc,
+            on_ctrl_c=on_ctrl_c,
+            escape_delay=0.04,
+        ):
+            pipe_in.send_text("\x1b[A")
+            await asyncio.sleep(0.08)
+            assert escape_calls == 0
+
+            pipe_in.send_text("\x1b")
+            await asyncio.sleep(0.08)
+            assert escape_calls == 1
+            assert ctrl_c_calls == 0
+
+
+async def test_ctrl_c_once_warns_twice_quits_and_ctrl_d_saves_and_exits(
+    aldwin_home: Path,
+) -> None:
+    """TC-24: Ctrl-C once warns, twice quits; Ctrl-D saves and exits 0."""
+    _ = aldwin_home
+    boot = bootstrap(plain=True)
+
+    # Case A: Ctrl-C once warns, second Ctrl-C exits
+    client_a = FakeClient()
+    buf_a = io.StringIO()
+    console_a = create_console(plain=True, width=80, record=True, file=buf_a)
+    with create_pipe_input() as pipe_a:
+        pipe_a.send_text("\x03")
+        pipe_a.send_text("\x03")
+        rc_a = await run_chat(
+            boot,
+            client=client_a,
+            console=console_a,
+            input_dev=pipe_a,
+        )
+    assert rc_a == 0
+    assert client_a.closed is True
+    text_a = console_a.export_text()
+    assert "Press Ctrl-C again to quit" in text_a
+    assert "Saved. See you." in text_a
+
+    # Case B: Ctrl-D (EOF) saves and exits
+    client_b = FakeClient()
+    buf_b = io.StringIO()
+    console_b = create_console(plain=True, width=80, record=True, file=buf_b)
+    with create_pipe_input() as pipe_b:
+        pipe_b.send_text("\x04")
+        rc_b = await run_chat(
+            boot,
+            client=client_b,
+            console=console_b,
+            input_dev=pipe_b,
+        )
+    assert rc_b == 0
+    assert client_b.closed is True
+    assert "Saved. See you." in console_b.export_text()
+
+
+async def test_chat_slash_command_status_and_error_events(aldwin_home: Path) -> None:
+    """`run_chat` routes slash commands and renders `StatusEvent` and `ErrorEvent`."""
+    from aldwin.protocol import ErrorEvent, StatusEvent
+
+    _ = aldwin_home
+    boot = bootstrap(plain=True)
+    client = FakeClient()
+    client.queue_turn(
+        [
+            StatusEvent(re="r1", message="OpenAI is busy, retrying (1 of 3)…"),
+            ErrorEvent(re="r1", code="rate_limited", message="rate limit"),
+        ]
+    )
+
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    with create_pipe_input() as pipe_in:
+        pipe_in.send_text("/help\r")
+        pipe_in.send_text("trigger retry and error\r")
+        pipe_in.send_text("/exit\r")
+        rc = await run_chat(
+            boot,
+            client=client,
+            console=console,
+            input_dev=pipe_in,
+        )
+
+    assert rc == 0
+    text = console.export_text()
+    assert "Commands:" in text
+    assert "OpenAI is busy, retrying (1 of 3)…" in text
+    assert "OpenAI is rate-limiting requests right now." in text
+
+
+async def test_ctrl_c_during_turn_stops_then_second_ctrl_c_quits(
+    aldwin_home: Path,
+) -> None:
+    """FR-9: Ctrl-C during a turn stops the turn; second Ctrl-C saves and quits."""
+    _ = aldwin_home
+    boot = bootstrap(plain=True)
+    client = FakeClient()
+    client.hang_until_stopped = True
+    client.queue_turn([TextEvent(re="r1", delta="Streaming...")])
+
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    with create_pipe_input() as pipe_in:
+        pipe_in.send_text("work on something\r")
+
+        async def _send_ctrl_c_twice() -> None:
+            await client.turn_started_event.wait()
+            await asyncio.sleep(0.02)
+            pipe_in.send_text("\x03")
+            await client._stop_gate.wait()
+            await asyncio.sleep(0.05)
+            pipe_in.send_text("\x03")
+
+        feeder = asyncio.create_task(_send_ctrl_c_twice())
+        rc = await run_chat(
+            boot,
+            client=client,
+            console=console,
+            input_dev=pipe_in,
+        )
+        await feeder
+
+    assert rc == 0
+    assert client.stop_calls >= 1
+    assert client.closed is True
+    text = console.export_text()
+    assert "Press Ctrl-C again to quit" in text
+    assert "Saved. See you." in text
