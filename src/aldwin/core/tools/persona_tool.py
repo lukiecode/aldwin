@@ -25,6 +25,7 @@ class SetPersonaTool(Tool):
         "for y/n approval before updating persona.md."
     )
     parallel_safe = False
+    timeout: float | None = float("inf")
     parameters: dict[str, Any] = {
         "type": "object",
         "properties": {

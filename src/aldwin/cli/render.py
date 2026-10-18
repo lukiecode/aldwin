@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -65,6 +66,20 @@ MAX_STEPS_NOTICE: Final[str] = "Stopped after 15 steps. Say *continue* to keep g
 TIPS_LINE: Final[str] = 'Try: "what can you do?"  ·  /help  ·  Esc stops an answer'
 
 
+_TRUNCATED_JSON_STR_RE: Final[re.Pattern[str]] = re.compile(
+    r'^\{\s*"(?P<key>command|url|name|query|text|answer)"\s*:\s*"(?P<val>.*)$'
+)
+
+
+def _cap_text_width(text: str, limit: int) -> str:
+    """Truncate `text` to at most `limit` characters with a trailing `…`."""
+    if limit <= 1:
+        return text[:limit]
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 1]}…"
+
+
 def format_display_args(args_preview: str, tool_name: str = "") -> str:
     """Convert a JSON `args_preview` into a concise human-readable argument string."""
     cleaned = args_preview.strip()
@@ -90,6 +105,16 @@ def format_display_args(args_preview: str, tool_name: str = "") -> str:
             return f"persona.md · {count} {unit}"
 
     if not (cleaned.startswith("{") and cleaned.endswith("}")):
+        if cleaned.startswith("{"):
+            match = _TRUNCATED_JSON_STR_RE.match(cleaned)
+            if match is not None:
+                key = match.group("key")
+                val = match.group("val")
+                if val.endswith('"'):
+                    val = val[:-1]
+                if key in ("query", "text"):
+                    return f'"{val}"'
+                return val
         return cleaned
 
     try:
@@ -234,9 +259,15 @@ class ChatRenderer:
                 padding=(0, 1),
             )
         else:
+            max_home = max(12, width - len(model) - 18)
+            shown_home = (
+                display_home
+                if len(display_home) <= max_home
+                else f"…{display_home[-(max_home - 1) :]}"
+            )
             panel = Panel(
                 Text(TIPS_LINE, style="muted"),
-                title=f"[accent]Aldwin[/accent] · {model} · {display_home}",
+                title=f"[accent]Aldwin[/accent] · {model} · {shown_home}",
                 title_align="left",
                 border_style="border",
                 width=width,
@@ -274,13 +305,10 @@ class ChatRenderer:
             if self.plain:
                 self.console.print(INTERRUPTED_NOTICE)
             else:
-                self.console.print(
-                    Text(
-                        "Your last request was interrupted. "
-                        "Say continue to pick it up.",
-                        style="warn",
-                    )
-                )
+                notice = Text("Your last request was interrupted. Say ", style="warn")
+                notice.append("continue", style="italic")
+                notice.append(" to pick it up.")
+                self.console.print(notice)
 
     def render_new_conversation_divider(self) -> None:
         """Render the divider shown when `/new` starts a fresh conversation (`FR-5`)."""
@@ -538,18 +566,28 @@ class TurnRenderer:
         include_args = bool(display_args) and not was_printed_pending
 
         if event.ok:
+            detail = f"{duration} · {summary}" if summary else duration
             card = Text("  ✓ ", style="ok", no_wrap=True, overflow="ellipsis")
             card.append(tool_name, style="muted")
             if include_args:
-                card.append(f"  {display_args}", style="muted")
-            detail = f"{duration} · {summary}" if summary else duration
+                avail = max(
+                    12,
+                    self.console.width - len("  ✓ ") - len(tool_name) - len(detail) - 4,
+                )
+                capped_args = _cap_text_width(display_args, avail)
+                card.append(f"  {capped_args}", style="muted")
             card.append(f"  {detail}", style="muted")
         else:
+            reason = summary or "failed"
             card = Text("  ✗ ", style="err", no_wrap=True, overflow="ellipsis")
             card.append(tool_name, style="err")
             if include_args:
-                card.append(f"  {display_args}", style="muted")
-            reason = summary or "failed"
+                avail = max(
+                    12,
+                    self.console.width - len("  ✗ ") - len(tool_name) - len(reason) - 4,
+                )
+                capped_args = _cap_text_width(display_args, avail)
+                card.append(f"  {capped_args}", style="muted")
             card.append(f"  {reason}", style="err")
 
         self.console.print(card, overflow="ellipsis", no_wrap=True)
@@ -637,12 +675,10 @@ class TurnRenderer:
             if self.plain:
                 self.console.print(MAX_STEPS_NOTICE)
             else:
-                self.console.print(
-                    Text(
-                        "Stopped after 15 steps. Say continue to keep going.",
-                        style="warn",
-                    )
-                )
+                notice = Text("Stopped after 15 steps. Say ", style="warn")
+                notice.append("continue", style="italic")
+                notice.append(" to keep going.")
+                self.console.print(notice)
             return total_tokens
 
         end_line = Text("  ✓ ", style="ok")

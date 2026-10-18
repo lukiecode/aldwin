@@ -261,3 +261,51 @@ async def test_unknown_slash_command_with_fake_host(fake_host: FakeHost) -> None
     assert should_exit is False
     assert fake_host.requests == []
     assert "Unknown command. Type /help." in console.export_text()
+
+
+def test_render_welcome_long_display_home_capped_at_76_cols() -> None:
+    """TC-14: Long `display_home` path in header panel stays `<= 76` columns."""
+    buf = io.StringIO()
+    console = create_console(width=120, record=True, file=buf)
+    renderer = ChatRenderer(console)
+
+    long_home = (
+        "/private/var/folders/b0/3_8pbpt16q99rkczytyjd72h0000gn/T/aldwin_long_home_dir"
+    )
+    renderer.render_welcome(
+        first_run=False,
+        model="gpt-4o-mini",
+        display_home=long_home,
+    )
+
+    for line in console.export_text().splitlines():
+        assert len(line.rstrip()) <= 76
+
+
+def test_colour_mode_notices_italicize_continue() -> None:
+    """TC-15: Colour-mode interrupted and `max_steps` notices italicize `continue`."""
+    buf = io.StringIO()
+    console = create_console(
+        plain=False,
+        width=80,
+        record=True,
+        file=buf,
+        force_terminal=True,
+    )
+    renderer = ChatRenderer(console, plain=False)
+
+    renderer.render_history(
+        HistoryEvent(
+            re="h1",
+            messages=[HistoryItem(role="user", text="hi")],
+            interrupted=True,
+        )
+    )
+    turn = renderer.start_turn()
+    try:
+        turn.finish_done(DoneEvent(re="r1", reason="max_steps"))
+    finally:
+        turn.close()
+
+    raw_ansi = buf.getvalue()
+    assert "\x1b[3;33mcontinue\x1b[0m" in raw_ansi or "\x1b[3m" in raw_ansi

@@ -59,6 +59,15 @@ PROMPT_STYLE: Final[Style] = Style.from_dict(
     }
 )
 
+PLAIN_PROMPT_STYLE: Final[Style] = Style.from_dict(
+    {
+        "": "",
+        "prompt": "",
+        "bottom-toolbar": "noreverse",
+        "bottom-toolbar.text": "noreverse",
+    }
+)
+
 _DATED_SNAPSHOT_RE: Final[re.Pattern[str]] = re.compile(r"-\d{4}-\d{2}-\d{2}$")
 _SNAPSHOT_SUFFIXES: Final[tuple[str, ...]] = (
     "-chat-latest",
@@ -197,15 +206,3 @@ def format_relative_time(
     if local_ts.date() == (local_now.date() - timedelta(days=1)):
         return f"yesterday {time_part}"
     return f"{local_ts.strftime('%Y-%m-%d')} {time_part}"
-
-
-def short_session_id(session_id: str) -> str:
-    """Extract a short 4-character identifier for the bottom toolbar (`FR-4`)."""
-    cleaned = session_id.strip()
-    if not cleaned:
-        return "new"
-    if "_" in cleaned:
-        suffix = cleaned.rsplit("_", 1)[-1]
-        if suffix:
-            return suffix[:4]
-    return cleaned[:4]

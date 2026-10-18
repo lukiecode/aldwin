@@ -359,3 +359,65 @@ async def test_run_command_sigkill_escalation_when_sigterm_ignored(
     )
     assert res.ok is False
     assert "timed out" in str(res)
+
+
+async def test_run_command_approval_wait_and_post_approval_timeout_in_agent(
+    tmp_path: Path,
+) -> None:
+    """TC-05 & TC-06: `tool_timeout` skips `ask()`; post-approval timeout fires."""
+    from agentling import Agent, ToolResultEvent
+    from fakes.model import FakeModel, FakeTurn
+
+    async def slow_approve(_s: str, _d: str = "") -> bool:
+        await asyncio.sleep(0.15)
+        return True
+
+    # 1. Approval wait (0.15s) exceeds Agent.tool_timeout (0.05s) without timing out.
+    cmd_tool_ok = build_run_command_tool(slow_approve, cwd=tmp_path, timeout=2.0)
+    fake_model_ok = FakeModel(
+        turns=[
+            FakeTurn.tool_call("run_command", {"command": "echo waited_ok"}),
+            FakeTurn.text(["Done."]),
+        ]
+    )
+    agent_ok = Agent(
+        model=fake_model_ok,
+        tools=[cmd_tool_ok],
+        tool_timeout=0.05,
+    )
+    session_ok = agent_ok.start()
+    results_ok = [
+        ev.result
+        async for ev in session_ok.run("run echo", stream=True, reset=False)
+        if isinstance(ev, ToolResultEvent)
+    ]
+    assert len(results_ok) == 1
+    assert results_ok[0].is_error is False
+    assert "waited_ok" in results_ok[0].content
+
+    # 2. Post-approval command timeout (0.1s) fires cleanly without ToolTimeoutError.
+    async def fast_approve(_s: str, _d: str = "") -> bool:
+        return True
+
+    cmd_tool_to = build_run_command_tool(fast_approve, cwd=tmp_path, timeout=0.1)
+    fake_model_to = FakeModel(
+        turns=[
+            FakeTurn.tool_call("run_command", {"command": "sleep 5"}),
+            FakeTurn.text(["Timed out."]),
+        ]
+    )
+    agent_to = Agent(
+        model=fake_model_to,
+        tools=[cmd_tool_to],
+        tool_timeout=60.0,
+    )
+    session_to = agent_to.start()
+    results_to = [
+        ev.result
+        async for ev in session_to.run("run sleep", stream=True, reset=False)
+        if isinstance(ev, ToolResultEvent)
+    ]
+    assert len(results_to) == 1
+    assert results_to[0].is_error is False
+    assert "Command timed out after 0.1s and was killed." in results_to[0].content
+    assert "ToolTimeoutError" not in results_to[0].content

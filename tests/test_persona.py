@@ -235,3 +235,39 @@ def test_persona_text_and_summary_via_client(aldwin_home: Path) -> None:
 
     client_summary = get_persona_summary(aldwin_home)
     assert client_summary == summary
+
+
+async def test_set_persona_approval_wait_exceeds_agent_tool_timeout(
+    aldwin_home: Path,
+) -> None:
+    """TC-05: `SetPersonaTool` approval wait exceeding `Agent.tool_timeout` succeeds."""
+    from agentling import Agent, ToolResultEvent
+
+    ensure_home(aldwin_home)
+
+    async def slow_approve(_s: str, _d: str = "") -> bool:
+        await asyncio.sleep(0.15)
+        return True
+
+    persona_tool = build_persona_tool(slow_approve, aldwin_home, cap=2000)
+    fake_model = FakeModel(
+        turns=[
+            FakeTurn.tool_call("set_persona", {"new_text": "Be brief."}),
+            FakeTurn.text(["Updated."]),
+        ]
+    )
+    agent = Agent(
+        model=fake_model,
+        tools=[persona_tool],
+        tool_timeout=0.05,
+    )
+    session = agent.start()
+    results = [
+        ev.result
+        async for ev in session.run("update persona", stream=True, reset=False)
+        if isinstance(ev, ToolResultEvent)
+    ]
+    assert len(results) == 1
+    assert results[0].is_error is False
+    assert results[0].content == "persona updated"
+    assert (aldwin_home / "persona.md").read_text(encoding="utf-8") == "Be brief.\n"

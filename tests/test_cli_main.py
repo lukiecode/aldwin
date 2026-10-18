@@ -166,3 +166,12 @@ async def test_launch_interactive_session_onboarding_and_chat(
     monkeypatch.setattr(onboarding_mod, "run_onboarding", ok_onboarding)
     assert await cli_main._launch_interactive_session(boot, debug=False) == 0
     assert seen_skip_welcome == [False, True]
+
+
+def test_cli_help_has_no_internal_ticket_tags() -> None:
+    """TC-13: `aldwin --help` describes `setup` and `uninstall` without `FR-1`."""
+    res = runner.invoke(app, ["--help"])
+    assert res.exit_code == 0
+    assert "setup" in res.output
+    assert "uninstall" in res.output
+    assert "FR-1" not in res.output

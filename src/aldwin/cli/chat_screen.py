@@ -29,6 +29,7 @@ from aldwin.cli.commands import (
 )
 from aldwin.cli.render import ChatRenderer
 from aldwin.cli.theme import (
+    PLAIN_PROMPT_STYLE,
     PROMPT_STYLE,
     context_left_percent,
     create_console,
@@ -311,6 +312,19 @@ def build_prompt_session(
     def _insert_newline(event: KeyPressEvent) -> None:
         event.current_buffer.insert_text("\n")
 
+    @kb.add("c-j")
+    def _insert_newline_ctrl_j(event: KeyPressEvent) -> None:
+        event.current_buffer.insert_text("\n")
+
+    @kb.add("c-m")
+    def _handle_enter(event: KeyPressEvent) -> None:
+        buf = event.current_buffer
+        if buf.document.text_before_cursor.endswith("\\"):
+            buf.delete_before_cursor(count=1)
+            buf.insert_text("\n")
+        else:
+            buf.validate_and_handle()
+
     effective_output = output_dev
     if effective_output is None and isinstance(input_dev, PipeInput):
         effective_output = DummyOutput()
@@ -320,7 +334,7 @@ def build_prompt_session(
         completer=SlashCompleter(),
         key_bindings=kb,
         bottom_toolbar=toolbar_fn,
-        style=None if plain else PROMPT_STYLE,
+        style=PLAIN_PROMPT_STYLE if plain else PROMPT_STYLE,
         multiline=False,
         input=input_dev,
         output=effective_output,
@@ -431,7 +445,7 @@ async def _chat_loop(
         sub_session: PromptSession[str] = PromptSession(
             input=input_dev,
             output=sub_output,
-            style=None if boot.plain else PROMPT_STYLE,
+            style=PLAIN_PROMPT_STYLE if boot.plain else PROMPT_STYLE,
         )
         return await sub_session.prompt_async(label)
 

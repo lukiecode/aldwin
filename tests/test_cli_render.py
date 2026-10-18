@@ -18,7 +18,6 @@ from aldwin.cli.theme import (
     format_elapsed_s,
     format_relative_time,
     format_tokens,
-    short_session_id,
 )
 from aldwin.protocol import (
     ApprovalEvent,
@@ -54,10 +53,6 @@ def test_theme_formatters() -> None:
     )
     assert format_relative_time(None, now=now) == "earlier"
     assert format_relative_time("not-a-timestamp", now=now) == "earlier"
-
-    assert short_session_id("2026-10-18_3f2a9b1c") == "3f2a"
-    assert short_session_id("abcd1234") == "abcd"
-    assert short_session_id("") == "new"
 
 
 def test_split_markdown_blocks_preserves_code_fences_with_blank_lines() -> None:
@@ -483,3 +478,92 @@ def test_resolve_approval_collapses_to_one_line_and_list_paragraph_spacing() -> 
     text = console.export_text()
     assert "✓ approved  df -h" in text
     assert "\n\nThis overview condenses the result." in text
+
+
+def test_format_display_args_unwraps_truncated_json_fallback() -> None:
+    """TC-08: `format_display_args` unwraps truncated JSON strings without raw `{`."""
+    assert (
+        format_display_args(
+            '{"command": "echo alpha_beta_gamma_delta…',
+            tool_name="run_command",
+        )
+        == "echo alpha_beta_gamma_delta…"
+    )
+    assert (
+        format_display_args(
+            '{"query": "long search query truncated…',
+            tool_name="web_search",
+        )
+        == '"long search query truncated…"'
+    )
+
+
+def test_tool_result_80_cols_preserves_duration_and_summary() -> None:
+    """TC-09: 80-col tool result row caps `display_args` and keeps `duration`."""
+    buf = io.StringIO()
+    console = create_console(
+        width=80,
+        record=True,
+        file=buf,
+        force_terminal=True,
+    )
+    renderer = ChatRenderer(console)
+    turn = renderer.start_turn()
+    try:
+        turn.on_tool_call(
+            ToolCallEvent(
+                re="r1",
+                call_id="c1",
+                name="run_command",
+                args_preview="echo " + ("x" * 110),
+            )
+        )
+        turn.on_tool_result(
+            ToolResultEvent(
+                re="r1",
+                call_id="c1",
+                ok=True,
+                summary="exit 0",
+                duration_ms=120,
+            )
+        )
+        turn.on_tool_call(
+            ToolCallEvent(
+                re="r1",
+                call_id="c2",
+                name="run_command",
+                args_preview="echo " + ("y" * 110),
+            )
+        )
+        turn.on_tool_result(
+            ToolResultEvent(
+                re="r1",
+                call_id="c2",
+                ok=False,
+                summary="exit 1",
+                duration_ms=50,
+            )
+        )
+    finally:
+        turn.close()
+
+    exported = console.export_text().splitlines()
+    ok_lines = [
+        line[line.index("  ✓ run_command") :].rstrip()
+        for line in exported
+        if "  ✓ run_command" in line
+    ]
+    assert len(ok_lines) == 1
+    assert len(ok_lines[0]) <= 80
+    assert ok_lines[0].startswith("  ✓ run_command  echo xxx")
+    assert ok_lines[0].endswith("0.1s · exit 0")
+
+    err_lines = [
+        line[line.index("  ✗ run_command") :].rstrip()
+        for line in exported
+        if "  ✗ run_command" in line
+    ]
+    assert len(err_lines) == 1
+    assert len(err_lines[0]) <= 80
+    assert err_lines[0].startswith("  ✗ run_command  echo yyy")
+    assert err_lines[0].endswith("exit 1")

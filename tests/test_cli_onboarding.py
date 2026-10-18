@@ -68,6 +68,8 @@ async def test_onboarding_env_skip_error_variants_and_three_strikes(
     """TC-16: Valid env key skips prompt; error copy & 3-strike exit."""
     monkeypatch.setenv("OPENAI_API_KEY", "sk-env-valid-12345678")
     boot = bootstrap(plain=True)
+    assert boot.created is True
+    assert needs_onboarding(boot) is True
 
     prompt_called = False
 

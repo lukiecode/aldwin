@@ -12,11 +12,12 @@ from prompt_toolkit.input.defaults import create_pipe_input
 
 from aldwin.cli.chat_screen import (
     TurnKeyListener,
+    build_prompt_session,
     format_bottom_toolbar,
     read_approval_key,
     run_chat,
 )
-from aldwin.cli.theme import create_console
+from aldwin.cli.theme import PLAIN_PROMPT_STYLE, create_console
 from aldwin.client import bootstrap
 from aldwin.protocol import (
     ApprovalEvent,
@@ -336,3 +337,21 @@ async def test_ctrl_c_during_turn_stops_then_second_ctrl_c_quits(
     text = console.export_text()
     assert "Press Ctrl-C again to quit" in text
     assert "Saved. See you." in text
+
+
+async def test_backslash_enter_and_ctrl_j_insert_newlines_and_plain_style(
+    aldwin_home: Path,
+) -> None:
+    """TC-10 & TC-12: `\\`+Enter and `Ctrl+J` insert newlines; plain is `noreverse`."""
+    with create_pipe_input() as pipe_in:
+        session = build_prompt_session(
+            aldwin_home,
+            toolbar_fn=lambda: "toolbar",
+            plain=True,
+            input_dev=pipe_in,
+        )
+        assert session.style is PLAIN_PROMPT_STYLE
+
+        pipe_in.send_text("first line\\\rsecond line\x0athird line\r")
+        result = await session.prompt_async("› ")
+        assert result == "first line\nsecond line\nthird line"
