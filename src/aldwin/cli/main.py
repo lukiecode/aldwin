@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 
 import typer
@@ -14,6 +13,7 @@ from aldwin.client import (
     ClientBootstrapError,
     PlatformNotSupportedError,
     bootstrap,
+    get_onboarding_status,
     purge_home_data,
 )
 
@@ -48,13 +48,16 @@ async def _launch_interactive_session(
     from aldwin.cli.theme import create_console
 
     console = create_console(plain=result.plain)
-    had_env_key = bool(os.environ.get("OPENAI_API_KEY", "").strip())
+    had_env_key = get_onboarding_status(result.home).openai_source == "env"
     skip_welcome = False
     if needs_onboarding(result):
         ok = await run_onboarding(result, console)
         if not ok:
             return 1
-        skip_welcome = not had_env_key or (result.home / "secrets.yaml").is_file()
+        skip_welcome = (
+            not had_env_key
+            or get_onboarding_status(result.home).openai_source == "file"
+        )
     elif result.created:
         console.print(f"Created {result.display_home}", soft_wrap=True)
 

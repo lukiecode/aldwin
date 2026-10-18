@@ -527,16 +527,43 @@ def test_tool_result_80_cols_preserves_duration_and_summary() -> None:
                 duration_ms=120,
             )
         )
+        turn.on_tool_call(
+            ToolCallEvent(
+                re="r1",
+                call_id="c2",
+                name="run_command",
+                args_preview="echo " + ("y" * 110),
+            )
+        )
+        turn.on_tool_result(
+            ToolResultEvent(
+                re="r1",
+                call_id="c2",
+                ok=False,
+                summary="exit 1",
+                duration_ms=50,
+            )
+        )
     finally:
         turn.close()
 
-    result_lines = [
+    exported = console.export_text().splitlines()
+    ok_lines = [
         line[line.index("  ✓ run_command") :].rstrip()
-        for line in console.export_text().splitlines()
+        for line in exported
         if "  ✓ run_command" in line
     ]
-    assert len(result_lines) == 1
-    line = result_lines[0]
-    assert len(line) <= 80
-    assert line.startswith("  ✓ run_command  echo xxx")
-    assert line.endswith("0.1s · exit 0")
+    assert len(ok_lines) == 1
+    assert len(ok_lines[0]) <= 80
+    assert ok_lines[0].startswith("  ✓ run_command  echo xxx")
+    assert ok_lines[0].endswith("0.1s · exit 0")
+
+    err_lines = [
+        line[line.index("  ✗ run_command") :].rstrip()
+        for line in exported
+        if "  ✗ run_command" in line
+    ]
+    assert len(err_lines) == 1
+    assert len(err_lines[0]) <= 80
+    assert err_lines[0].startswith("  ✗ run_command  echo yyy")
+    assert err_lines[0].endswith("exit 1")

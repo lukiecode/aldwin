@@ -564,6 +564,7 @@ class AldwinHost:
                             if not res.is_error:
                                 answer_text = str(res.content)
                                 if answer_text and answer_text != streamed_before_tools:
+                                    step_text_chunks.append(answer_text)
                                     await scope.emit(
                                         TextEvent(re=req.id, delta=answer_text)
                                     )
