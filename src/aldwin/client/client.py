@@ -3,24 +3,37 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
+from pathlib import Path
 from typing import Final
 
 from aldwin.host.in_process import (
     BootstrapResult,
     ClientBootstrapError,
     ClientTransport,
+    InvalidSkillSummary,
+    KeyCheckResult,
     MemorySummary,
     NoteEntry,
+    OnboardingStatus,
     PersonaSummary,
     PlatformNotSupportedError,
+    SkillsReport,
+    SkillSummary,
     ToolInfo,
     bootstrap_host,
+    check_openai_key,
     get_builtin_tools,
     get_memory_summary,
+    get_onboarding_status,
     get_persona_summary,
     get_persona_text,
+    get_skills_report,
+    list_available_models,
+    open_in_process_client,
     pop_profile_truncation_warning,
+    purge_home_data,
+    save_setup,
 )
 from aldwin.protocol import (
     PROTOCOL_VERSION,
@@ -56,11 +69,47 @@ class ProtocolError(Exception):
 class AldwinClient:
     """Async client that every Python door uses to talk to the Aldwin host (`FR-16`)."""
 
-    def __init__(self, transport: ClientTransport) -> None:
+    def __init__(
+        self,
+        transport: ClientTransport,
+        *,
+        model_getter: Callable[[], str] | None = None,
+        session_id_getter: Callable[[], str] | None = None,
+        updated_at_getter: Callable[[], str | None] | None = None,
+        home: Path | None = None,
+    ) -> None:
         self._transport = transport
         self._queues: dict[str, asyncio.Queue[Event | None]] = {}
         self._reader_task: asyncio.Task[None] | None = None
+        self._connected_event: DoneEvent | None = None
         self._closed = False
+        self._model_getter = model_getter
+        self._session_id_getter = session_id_getter
+        self._updated_at_getter = updated_at_getter
+        self._home = home
+        self._fallback_model = "gpt-4o"
+        self._fallback_session_id = "new"
+
+    @property
+    def model(self) -> str:
+        """Return the currently active model name."""
+        if self._model_getter is not None:
+            return self._model_getter()
+        return self._fallback_model
+
+    @property
+    def session_id(self) -> str:
+        """Return the active conversation session ID."""
+        if self._session_id_getter is not None:
+            return self._session_id_getter()
+        return self._fallback_session_id
+
+    @property
+    def updated_at(self) -> str | None:
+        """Return the ISO-8601 timestamp when the active session was last updated."""
+        if self._updated_at_getter is not None:
+            return self._updated_at_getter()
+        return None
 
     def _ensure_reader(self) -> None:
         if self._reader_task is None or self._reader_task.done():
@@ -103,9 +152,12 @@ class AldwinClient:
         v_max: int = PROTOCOL_VERSION,
     ) -> DoneEvent:
         """Perform the initial `hello` handshake with the host (`FR-4`)."""
+        if self._connected_event is not None and v_min == PROTOCOL_VERSION == v_max:
+            return self._connected_event
         terminal = await self._request_terminal(HelloRequest(v_min=v_min, v_max=v_max))
         if isinstance(terminal, ErrorEvent):
             raise ProtocolError(terminal.message, code=terminal.code)
+        self._connected_event = terminal
         return terminal
 
     async def turn(self, text: str) -> AsyncGenerator[Event, None]:
@@ -166,11 +218,34 @@ class AldwinClient:
 
     async def set_model(self, name: str) -> DoneEvent | ErrorEvent:
         """Switch the active model for subsequent turns (`FR-15`)."""
-        return await self._request_terminal(SetModelRequest(name=name))
+        result = await self._request_terminal(SetModelRequest(name=name))
+        if isinstance(result, DoneEvent):
+            self._fallback_model = name.strip()
+        return result
 
     async def new_conversation(self) -> None:
         """Close the current session file and start a new conversation (`FR-14`)."""
         await self._transport.new_conversation()
+
+    async def list_models(self) -> list[str]:
+        """Return available OpenAI chat models for `/model` (`FR-5`)."""
+        return await list_available_models(home=self._home)
+
+    def persona_summary(self) -> PersonaSummary:
+        """Return current persona text and path metadata for `/persona` (`FR-5`)."""
+        return get_persona_summary(self._home)
+
+    def memory_summary(self) -> MemorySummary:
+        """Return profile and recent notes summary for `/memory` (`FR-5`)."""
+        return get_memory_summary(self._home)
+
+    def skills_report(self) -> SkillsReport:
+        """Return valid and invalid skills report for `/skills` (`FR-5`)."""
+        return get_skills_report(self._home)
+
+    def tools_summary(self) -> list[ToolInfo]:
+        """Return built-in tools descriptors for `/tools` (`FR-5`)."""
+        return get_builtin_tools()
 
     async def close(self) -> None:
         """Close the client and underlying transport."""
@@ -186,16 +261,28 @@ __all__ = [
     "AldwinClient",
     "BootstrapResult",
     "ClientBootstrapError",
+    "InvalidSkillSummary",
+    "KeyCheckResult",
     "MemorySummary",
     "NoteEntry",
+    "OnboardingStatus",
     "PersonaSummary",
     "PlatformNotSupportedError",
     "ProtocolError",
+    "SkillSummary",
+    "SkillsReport",
     "ToolInfo",
     "bootstrap",
+    "check_openai_key",
     "get_builtin_tools",
     "get_memory_summary",
+    "get_onboarding_status",
     "get_persona_summary",
     "get_persona_text",
+    "get_skills_report",
+    "list_available_models",
+    "open_in_process_client",
     "pop_profile_truncation_warning",
+    "purge_home_data",
+    "save_setup",
 ]
