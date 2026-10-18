@@ -1,0 +1,103 @@
+name: Bug report
+description: Report a bug or unexpected behaviour in Aldwin
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug in Aldwin. Please fill in the details below and make sure no API keys or private data are included.
+
+  - type: input
+    id: version
+    attributes:
+      label: Aldwin version
+      description: Output of `aldwin --version`
+      placeholder: "aldwin 0.0.1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux (Ubuntu / Debian)
+        - Linux (Fedora / RHEL / Arch)
+        - Linux (Other)
+    validations:
+      required: true
+
+  - type: input
+    id: os_version
+    attributes:
+      label: OS version and architecture
+      description: Output of `uname -srm`
+      placeholder: "Darwin 24.1.0 arm64 / Linux 6.8.0 x86_64"
+    validations:
+      required: true
+
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      description: Output of `python3 --version`
+      placeholder: "Python 3.11.10"
+    validations:
+      required: true
+
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal emulator
+      placeholder: "macOS Terminal / iTerm2 / Ghostty / WezTerm / GNOME Terminal / tmux"
+    validations:
+      required: false
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal numbered steps to trigger the issue
+      placeholder: |
+        1. Run `aldwin`
+        2. Ask `...`
+        3. Press `...`
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines (with secrets removed)
+      description: |
+        Relevant lines from `~/.aldwin/logs/aldwin.log` (`tail -n 50 ~/.aldwin/logs/aldwin.log`).
+        Do NOT paste your `secrets.yaml`, OpenAI/Tavily API keys, or private file paths.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: redacted
+    attributes:
+      label: Privacy and secrets check
+      options:
+        - label: I have checked that this report contains no API keys (`sk-...`, `tvly-...`) or sensitive personal data.
+          required: true

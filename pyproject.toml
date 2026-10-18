@@ -1,6 +1,6 @@
 [project]
 name = "aldwin"
-version = "0.0.1.dev0"
+version = "0.0.1"
 description = "An open-source personal assistant that runs on your own computer, built on Agentling."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,8 @@ dependencies = [
 Homepage = "https://askaldwin.com"
 Repository = "https://github.com/lunarstack-co/aldwin"
 Issues = "https://github.com/lunarstack-co/aldwin/issues"
+Changelog = "https://github.com/lunarstack-co/aldwin/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/lunarstack-co/aldwin#readme"
 
 [project.scripts]
 aldwin = "aldwin.cli.main:app"
@@ -47,6 +49,15 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aldwin"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "src/aldwin",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
