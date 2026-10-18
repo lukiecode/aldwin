@@ -126,6 +126,11 @@ def test_tool_output_and_summarize_tool_result_contract() -> None:
     )
     assert summarize_tool_result("custom", "   \n  ") == (True, "")
 
+    import aldwin.core.tools as tools_mod
+
+    with pytest.raises(AttributeError):
+        _ = tools_mod.nonexistent_tool_attr
+
 
 async def test_host_emits_tool_summaries_and_preserves_20k_fetch_in_memory(
     aldwin_home: Path,

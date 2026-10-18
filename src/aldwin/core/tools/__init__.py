@@ -5,13 +5,21 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
-
-from agentling import Tool
-
-from aldwin.core.settings import SecretsConfig
+from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
+    from agentling import Tool
+
+    from aldwin.core.settings import SecretsConfig
+    from aldwin.core.tools.memory_tools import (
+        RecallTool,
+        RememberTool,
+        build_memory_tools,
+    )
+    from aldwin.core.tools.persona_tool import (
+        SetPersonaTool,
+        build_persona_tool,
+    )
     from aldwin.core.tools.web_search import SearchProvider
 
 AskFn = Callable[[str, str], Awaitable[bool]]
@@ -67,17 +75,6 @@ class ToolOutput(str):
             summary=self.summary,
             ok=self.ok,
         )
-
-
-from aldwin.core.tools.memory_tools import (  # noqa: E402
-    RecallTool,
-    RememberTool,
-    build_memory_tools,
-)
-from aldwin.core.tools.persona_tool import (  # noqa: E402
-    SetPersonaTool,
-    build_persona_tool,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +162,8 @@ def builtin_tools(
 ) -> list[Tool]:
     """Return the fixed 6 built-in tools for Aldwin 0.0.1 (`FR-6`)."""
     from aldwin.core.persona import DEFAULT_PERSONA_CAP
+    from aldwin.core.tools.memory_tools import build_memory_tools
+    from aldwin.core.tools.persona_tool import build_persona_tool
     from aldwin.core.tools.run_command import build_run_command_tool
     from aldwin.core.tools.web_fetch import build_web_fetch_tool
     from aldwin.core.tools.web_search import build_web_search_tool
@@ -202,6 +201,19 @@ def builtin_tools(
 def list_builtin_tools() -> list[ToolInfo]:
     """Return one-line descriptions of the built-in tools for `/tools` (`FR-7`)."""
     return list(_BUILTIN_TOOL_CATALOG)
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily import tool classes so `aldwin --version` avoids loading `agentling`."""
+    if name in ("RecallTool", "RememberTool", "build_memory_tools"):
+        from aldwin.core.tools import memory_tools
+
+        return getattr(memory_tools, name)
+    if name in ("SetPersonaTool", "build_persona_tool"):
+        from aldwin.core.tools import persona_tool
+
+        return getattr(persona_tool, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
