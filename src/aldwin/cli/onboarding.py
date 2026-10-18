@@ -83,9 +83,11 @@ async def _default_prompt(prompt_text: str, is_password: bool) -> str:
 
 
 def needs_onboarding(boot: BootstrapResult) -> bool:
-    """Return `True` when no OpenAI API key is configured in env or `secrets.yaml`."""
+    """Return `True` when no OpenAI key is configured or on first run with env key."""
     status = get_onboarding_status(boot.home)
-    return not status.has_openai_key
+    if not status.has_openai_key:
+        return True
+    return boot.created and status.openai_source == "env"
 
 
 async def _verify_key_with_spinner(

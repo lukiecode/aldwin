@@ -33,7 +33,7 @@ SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
 
 KEYBINDINGS_HELP: Final[tuple[tuple[str, str], ...]] = (
     ("Enter", "Send message"),
-    ("Alt+Enter (Esc then Enter)", "Insert a new line"),
+    ("Alt+Enter / Ctrl+J / \\+Enter", "Insert a new line"),
     ("Esc", "Stop the current answer or decline approval"),
     ("?", "Show keyboard shortcuts (when prompt is empty)"),
     ("↑ / ↓", "Previous / next message in history"),

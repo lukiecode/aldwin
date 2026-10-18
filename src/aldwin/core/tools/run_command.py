@@ -400,7 +400,7 @@ class RunCommandTool(Tool):
         "approval. Refuses sudo and interactive programs."
     )
     parallel_safe = False
-    timeout = None
+    timeout: float | None = float("inf")
     max_output_chars = 10_500
     parameters: dict[str, Any] = {
         "type": "object",

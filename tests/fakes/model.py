@@ -96,6 +96,24 @@ class FakeTurn:
         return cls.text(answer, usage=usage)
 
     @classmethod
+    def final_answer_tool(
+        cls,
+        answer: str = "ok",
+        *,
+        call_id: str = "call_final",
+        content: str | None = None,
+        usage: Usage | None = None,
+    ) -> FakeTurn:
+        """Emit a turn that terminates via Agentling's `final_answer` tool."""
+        return cls.tool_call(
+            "final_answer",
+            {"answer": answer},
+            call_id=call_id,
+            content=content,
+            usage=usage,
+        )
+
+    @classmethod
     def error(cls, exc: Exception) -> FakeTurn:
         """Raise `exc` when the model is called."""
         return cls(exc=exc)

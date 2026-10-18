@@ -26,6 +26,7 @@ from aldwin.host import (
     InProcessTransport,
     RequestScope,
     SessionStore,
+    format_args_preview,
 )
 from aldwin.protocol import (
     ApprovalEvent,
@@ -700,3 +701,132 @@ async def test_client_connect_raises_protocol_error_on_version_mismatch(
     finally:
         await client.close()
         await host.stop_host()
+
+
+async def test_turn_direct_final_answer_emits_text_with_zero_tools(
+    aldwin_home: Path,
+    fake_model: FakeModel,
+) -> None:
+    """TC-02: Single-step `final_answer` emits `TextEvent` and zero tool cards."""
+    ensure_home(aldwin_home)
+    fake_model.add_turns(
+        FakeTurn.final_answer_tool("Direct reply via tool.", call_id="c_fa")
+    )
+    transport = InProcessTransport()
+    host = AldwinHost(
+        transport,
+        agent_builder=lambda _m, _ask: Agent(model=fake_model),
+    )
+    await host.start()
+    client = AldwinClient(transport.connect())
+
+    try:
+        await client.connect()
+        events = await _collect_turn(client, "hi")
+        kinds = [ev.kind for ev in events]
+        assert kinds == ["text", "done"]
+        assert isinstance(events[0], TextEvent)
+        assert events[0].delta == "Direct reply via tool."
+        assert isinstance(events[1], DoneEvent)
+        assert events[1].reason == "answered"
+
+        hist = await client.history()
+        roles = [(item.role, item.text) for item in hist.messages]
+        assert roles == [
+            ("user", "hi"),
+            ("assistant", "Direct reply via tool."),
+        ]
+    finally:
+        await client.close()
+        await host.stop_host()
+
+
+async def test_turn_final_answer_with_streamed_prefix_does_not_duplicate(
+    aldwin_home: Path,
+    fake_model: FakeModel,
+) -> None:
+    """TC-03: `final_answer` matching streamed text does not duplicate `TextEvent`."""
+    ensure_home(aldwin_home)
+    fake_model.add_turns(
+        FakeTurn.final_answer_tool(
+            "Same text",
+            content="Same text",
+            call_id="c_fa_dup",
+        )
+    )
+    transport = InProcessTransport()
+    host = AldwinHost(
+        transport,
+        agent_builder=lambda _m, _ask: Agent(model=fake_model),
+    )
+    await host.start()
+    client = AldwinClient(transport.connect())
+
+    try:
+        await client.connect()
+        events = await _collect_turn(client, "hi")
+        texts = [ev.delta for ev in events if isinstance(ev, TextEvent)]
+        assert texts == ["Same text"]
+        assert isinstance(events[-1], DoneEvent)
+        assert events[-1].reason == "answered"
+    finally:
+        await client.close()
+        await host.stop_host()
+
+
+async def test_turn_malformed_final_answer_error_recovers(
+    aldwin_home: Path,
+    fake_model: FakeModel,
+) -> None:
+    """TC-04: Malformed `final_answer({})` (`is_error=True`) continues to next step."""
+    ensure_home(aldwin_home)
+    fake_model.add_turns(
+        FakeTurn.tool_call("final_answer", {}, call_id="c_bad_fa"),
+        FakeTurn.text(["Recovered answer"]),
+    )
+    transport = InProcessTransport()
+    host = AldwinHost(
+        transport,
+        agent_builder=lambda _m, _ask: Agent(model=fake_model),
+    )
+    await host.start()
+    client = AldwinClient(transport.connect())
+
+    try:
+        await client.connect()
+        events = await _collect_turn(client, "hi")
+        assert not any(
+            isinstance(ev, (ToolCallEvent, ToolResultEvent)) for ev in events
+        )
+        texts = [ev.delta for ev in events if isinstance(ev, TextEvent)]
+        assert texts == ["Recovered answer"]
+        assert isinstance(events[-1], DoneEvent)
+        assert events[-1].reason == "answered"
+    finally:
+        await client.close()
+        await host.stop_host()
+
+
+def test_format_args_preview_unwraps_long_arguments_without_raw_json() -> None:
+    """TC-07: `format_args_preview` unwraps primary string fields before truncating."""
+    long_cmd = "echo " + ("a" * 150)
+    long_query = "python " + ("b" * 150)
+    long_url = "https://example.com/" + ("c" * 150)
+
+    cmd_preview = format_args_preview({"command": long_cmd})
+    assert len(cmd_preview) <= 120
+    assert cmd_preview.startswith("echo aaaa")
+    assert cmd_preview.endswith("…")
+    assert not cmd_preview.startswith("{")
+
+    query_preview = format_args_preview({"query": long_query, "limit": 3})
+    assert len(query_preview) <= 120
+    assert query_preview.startswith('"python bbbb')
+    assert query_preview.endswith("…")
+    assert not query_preview.startswith("{")
+
+    url_preview = format_args_preview({"url": long_url})
+    assert len(url_preview) <= 120
+    assert url_preview.startswith("https://example.com/cccc")
+    assert url_preview.endswith("…")
+    assert not url_preview.startswith("{")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 
 import typer
@@ -47,19 +48,20 @@ async def _launch_interactive_session(
     from aldwin.cli.theme import create_console
 
     console = create_console(plain=result.plain)
-    ran_onboarding = False
+    had_env_key = bool(os.environ.get("OPENAI_API_KEY", "").strip())
+    skip_welcome = False
     if needs_onboarding(result):
         ok = await run_onboarding(result, console)
         if not ok:
             return 1
-        ran_onboarding = True
+        skip_welcome = not had_env_key or (result.home / "secrets.yaml").is_file()
     elif result.created:
         console.print(f"Created {result.display_home}", soft_wrap=True)
 
     return await run_chat(
         result,
         debug=debug,
-        skip_welcome=ran_onboarding,
+        skip_welcome=skip_welcome,
         console=console,
     )
 
@@ -119,7 +121,7 @@ def setup(
         help="Disable colours and spinners during setup.",
     ),
 ) -> None:
-    """Configure API keys and default model (`FR-1`)."""
+    """Configure API keys and default model."""
     try:
         result = bootstrap(plain=plain, debug=False)
     except (PlatformNotSupportedError, ClientBootstrapError) as exc:
@@ -143,7 +145,7 @@ def uninstall(
         help="Also delete ~/.aldwin and all saved data.",
     ),
 ) -> None:
-    """Uninstall Aldwin (keeps ~/.aldwin unless --purge is passed) (`FR-1`)."""
+    """Uninstall Aldwin (keeps ~/.aldwin unless --purge is passed)."""
     try:
         result = bootstrap(plain=True, debug=False)
     except (PlatformNotSupportedError, ClientBootstrapError) as exc:

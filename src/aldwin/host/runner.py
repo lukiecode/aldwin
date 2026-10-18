@@ -83,6 +83,19 @@ def format_args_preview(arguments: dict[str, Any]) -> str:
         line_count = len(raw_text.splitlines()) if raw_text else 0
         unit = "line" if line_count == 1 else "lines"
         return f"persona.md · {line_count} {unit}"
+    for raw_key in ("command", "url", "name"):
+        if raw_key in arguments and isinstance(arguments[raw_key], str):
+            return shorten_one_line(arguments[raw_key], MAX_PREVIEW_CHARS)
+    for quoted_key in ("query", "text"):
+        if quoted_key in arguments and isinstance(arguments[quoted_key], str):
+            val = arguments[quoted_key]
+            if len(arguments) == 1:
+                return shorten_one_line(f'"{val}"', MAX_PREVIEW_CHARS)
+            extras = [f"{k}={v}" for k, v in arguments.items() if k != quoted_key]
+            return shorten_one_line(
+                f'"{val}" ({", ".join(extras)})',
+                MAX_PREVIEW_CHARS,
+            )
     raw = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
     return shorten_one_line(raw, MAX_PREVIEW_CHARS)
 
@@ -504,6 +517,7 @@ class AldwinHost:
             self._active_turn_scope = scope
             self._agent_session._interrupt.clear()
             step_text_chunks: list[str] = []
+            streamed_before_tools: str = ""
             tool_start_times: dict[str, float] = {}
             final_status: str = "completed"
             final_usage: Usage | None = None
@@ -524,14 +538,18 @@ class AldwinHost:
                         step_text_chunks.append(ev.text)
                         await scope.emit(TextEvent(re=req.id, delta=ev.text))
                     elif isinstance(ev, AgentlingToolCallEvent):
-                        step_text_chunks.clear()
+                        if step_text_chunks:
+                            streamed_before_tools = "".join(step_text_chunks)
+                            step_text_chunks.clear()
                         call = ev.tool_call
-                        tool_start_times[call.id] = time.monotonic()
                         self._session_store.save(
                             self._stored_session,
                             self._agent_session.memory,
                             interrupted=True,
                         )
+                        if call.name == "final_answer":
+                            continue
+                        tool_start_times[call.id] = time.monotonic()
                         await scope.emit(
                             ToolCallEvent(
                                 re=req.id,
@@ -542,6 +560,15 @@ class AldwinHost:
                         )
                     elif isinstance(ev, AgentlingToolResultEvent):
                         res = ev.result
+                        if res.name == "final_answer":
+                            if not res.is_error:
+                                answer_text = str(res.content)
+                                if answer_text and answer_text != streamed_before_tools:
+                                    await scope.emit(
+                                        TextEvent(re=req.id, delta=answer_text)
+                                    )
+                            streamed_before_tools = ""
+                            continue
                         started = tool_start_times.pop(res.tool_call_id, None)
                         explicit_ms = getattr(res.content, "duration_ms", None)
                         if isinstance(explicit_ms, int):
@@ -569,6 +596,7 @@ class AldwinHost:
                         )
                     elif isinstance(ev, StepEvent):
                         step_text_chunks.clear()
+                        streamed_before_tools = ""
                         self._session_store.save(
                             self._stored_session,
                             self._agent_session.memory,

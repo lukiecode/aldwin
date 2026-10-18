@@ -328,3 +328,54 @@ async def test_fifty_turn_conversation_caps_context_at_20_user_turns(
         assert user_turns <= 20, (
             f"Model call {call_idx} received {user_turns} user turns (max 20)"
         )
+
+
+async def test_turn_with_tool_then_final_answer_emits_text_and_hides_final_answer_card(
+    host_client: AldwinClient,
+    fake_model: FakeModel,
+) -> None:
+    """TC-01: Turn finishing via `final_answer` renders Markdown and 1 tool."""
+    from aldwin.cli.render import ChatRenderer
+    from aldwin.cli.theme import create_console
+
+    fake_model.add_turns(
+        tool_call("recall", {"query": "metric"}, call_id="c_rec"),
+        tool_call(
+            "final_answer",
+            {"answer": "You prefer **metric** units."},
+            call_id="c_fa",
+        ),
+    )
+
+    events = await collect(host_client.turn("What units?"))
+
+    tool_calls = [ev for ev in events if isinstance(ev, ToolCallEvent)]
+    tool_results = [ev for ev in events if isinstance(ev, ToolResultEvent)]
+    assert [tc.name for tc in tool_calls] == ["recall"]
+    assert len(tool_results) == 1
+
+    texts = [ev.delta for ev in events if isinstance(ev, TextEvent)]
+    assert "".join(texts) == "You prefer **metric** units."
+    assert isinstance(events[-1], DoneEvent)
+    assert events[-1].reason == "answered"
+
+    console = create_console(plain=False, width=80, record=True)
+    chat_renderer = ChatRenderer(console, plain=False)
+    turn_renderer = chat_renderer.start_turn(clock=lambda: 100.0)
+    try:
+        for ev in events:
+            if isinstance(ev, TextEvent):
+                turn_renderer.on_text(ev.delta)
+            elif isinstance(ev, ToolCallEvent):
+                turn_renderer.on_tool_call(ev)
+            elif isinstance(ev, ToolResultEvent):
+                turn_renderer.on_tool_result(ev)
+            elif isinstance(ev, DoneEvent):
+                turn_renderer.finish_done(ev)
+    finally:
+        turn_renderer.close()
+
+    rendered = console.export_text()
+    assert "final_answer" not in rendered
+    assert "You prefer metric units." in rendered
+    assert "✓ done · 0s · 1 tool" in rendered
