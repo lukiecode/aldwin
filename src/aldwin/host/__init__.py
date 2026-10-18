@@ -9,9 +9,16 @@ from aldwin.host.in_process import (
     ClientBootstrapError,
     ClientTransport,
     InProcessTransport,
+    MemorySummary,
     NewConversationHandler,
+    NoteEntry,
+    PersonaSummary,
     PlatformNotSupportedError,
     bootstrap_host,
+    get_memory_summary,
+    get_persona_summary,
+    get_persona_text,
+    pop_profile_truncation_warning,
 )
 
 if TYPE_CHECKING:
@@ -75,7 +82,10 @@ __all__ = [
     "ClientBootstrapError",
     "ClientTransport",
     "InProcessTransport",
+    "MemorySummary",
     "NewConversationHandler",
+    "NoteEntry",
+    "PersonaSummary",
     "PlatformNotSupportedError",
     "RequestScope",
     "SessionMeta",
@@ -86,5 +96,9 @@ __all__ = [
     "derive_session_title",
     "format_args_preview",
     "format_tool_summary",
+    "get_memory_summary",
+    "get_persona_summary",
+    "get_persona_text",
+    "pop_profile_truncation_warning",
     "shorten_one_line",
 ]
