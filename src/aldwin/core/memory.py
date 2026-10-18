@@ -276,6 +276,7 @@ def _load_notes_newest_first(
     *,
     days: int | None = None,
     today: date | None = None,
+    limit: int | None = None,
 ) -> list[NoteEntry]:
     """Return notes ordered newest first (newest date first, bottom-to-top per file)."""
     notes_dir = root / NOTES_SUBDIR
@@ -293,6 +294,8 @@ def _load_notes_newest_first(
     ):
         file_entries = _read_notes_from_file(path, date_str)
         results.extend(reversed(file_entries))
+        if limit is not None and len(results) >= limit:
+            return results[:limit]
     return results
 
 
@@ -314,21 +317,15 @@ def remember_note(
     if "\x00" in text:
         raise ValueError("Invalid note: text must not contain null bytes.")
 
-    raw_trimmed = text.strip()
-    if not raw_trimmed:
+    cleaned = sanitize_note_text(text)
+    if not cleaned:
         raise ValueError(
             f"Invalid note: text must be between 1 and {MAX_NOTE_CHARS} characters."
         )
-    if len(raw_trimmed) > MAX_NOTE_CHARS:
+    if len(cleaned) > MAX_NOTE_CHARS:
         raise ValueError(
             f"Invalid note: text must be at most {MAX_NOTE_CHARS} characters "
-            f"(got {len(raw_trimmed)})."
-        )
-
-    cleaned = sanitize_note_text(raw_trimmed)
-    if not cleaned or len(cleaned) > MAX_NOTE_CHARS:
-        raise ValueError(
-            f"Invalid note: text must be between 1 and {MAX_NOTE_CHARS} characters."
+            f"(got {len(cleaned)})."
         )
 
     root = (home if home is not None else home_dir()).expanduser().resolve()
@@ -415,8 +412,10 @@ def recall_notes(
 
 
 def _strip_html_comments(text: str) -> str:
-    """Remove HTML comments (`<!-- ... -->`) from `text`."""
+    """Remove HTML comments (`<!-- ... -->`) and stray comment markers from `text`."""
     cleaned = _HTML_COMMENT_RE.sub("", text)
+    while "<!--" in cleaned or "-->" in cleaned:
+        cleaned = cleaned.replace("<!--", "").replace("-->", "")
     return cleaned.strip()
 
 
@@ -498,8 +497,8 @@ def memory_block(
     if profile_text:
         sections.append(f"\n## Profile\n{profile_text}")
     if kept_note_lines:
-        notes_Joined = "\n".join(kept_note_lines)
-        sections.append(f"\n## Recent notes\n{notes_Joined}")
+        notes_joined = "\n".join(kept_note_lines)
+        sections.append(f"\n## Recent notes\n{notes_joined}")
     sections.append("</memory>")
     return "\n".join(sections)
 
@@ -530,7 +529,17 @@ def memory_summary(
         days=DUPLICATE_WINDOW_DAYS,
         today=today,
     )
-    all_notes = _load_notes_newest_first(root, days=None, today=today)
+    if len(notes_7d) >= SUMMARY_RECENT_LIMIT:
+        recent_notes = tuple(notes_7d[:SUMMARY_RECENT_LIMIT])
+    else:
+        recent_notes = tuple(
+            _load_notes_newest_first(
+                root,
+                days=None,
+                today=today,
+                limit=SUMMARY_RECENT_LIMIT,
+            )
+        )
 
     return MemorySummary(
         profile_path=profile_path,
@@ -539,5 +548,5 @@ def memory_summary(
         profile_cap_chars=active_limits.profile_chars,
         profile_truncated=profile_size > active_limits.profile_chars,
         notes_last_7_days=len(notes_7d),
-        recent_notes=tuple(all_notes[:SUMMARY_RECENT_LIMIT]),
+        recent_notes=recent_notes,
     )

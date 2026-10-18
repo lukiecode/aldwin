@@ -148,6 +148,10 @@ async def test_remember_rejects_empty_and_over_300_chars(aldwin_home: Path) -> N
     assert valid_300 == "saved"
     assert len(list(notes_dir.glob("*.md"))) == 1
 
+    # A 300-char note prefixed with "- " (302 chars raw) succeeds after sanitization.
+    prefixed_300 = await remember_tool.call({"text": "- " + ("c" * 300)})
+    assert prefixed_300 == "saved"
+
 
 async def test_recall_matches_all_words_newest_first_capped_at_20(
     aldwin_home: Path,
@@ -520,10 +524,63 @@ def test_memory_summary_via_core_and_client(aldwin_home: Path) -> None:
     assert client_summary.profile_size_chars == summary.profile_size_chars
     assert len(client_summary.recent_notes) == 10
 
-    # Missing profile file handled gracefully.
+    # Missing or unclosed-comment profile file handled gracefully.
+    atomic_write(aldwin_home / "memory" / "profile.md", "<!-- unclosed\nLondon\n")
+    assert read_profile(aldwin_home) == ("unclosed\nLondon", False)
     (aldwin_home / "memory" / "profile.md").unlink()
     assert read_profile(aldwin_home) == ("", False)
     assert memory_summary(aldwin_home, today=today).profile_size_chars == 0
+
+    # When < 10 notes exist in the 7-day window, older notes fill up to 10.
+    later_summary = memory_summary(
+        aldwin_home,
+        LimitsConfig(),
+        today=date(2026, 10, 28),
+    )
+    assert later_summary.notes_last_7_days == 0
+    assert len(later_summary.recent_notes) == 10
+
+
+async def test_host_remember_tool_binds_active_session_id(
+    aldwin_home: Path,
+    fake_model: FakeModel,
+) -> None:
+    """`remember` called through `AldwinHost` records the active `session:<id>`."""
+    from aldwin.client import AldwinClient
+    from aldwin.host import AldwinHost, InProcessTransport
+
+    ensure_home(aldwin_home)
+    fake_model.add_turns(
+        FakeTurn.tool_call("remember", {"text": "Host-bound session fact"}),
+        FakeTurn.text(["Saved that for you."]),
+    )
+
+    transport = InProcessTransport()
+    host = AldwinHost(
+        transport,
+        agent_builder=lambda model_name, ask: build_agent(
+            AldwinConfig(model=model_name),
+            SecretsConfig(),
+            ask,
+            home=aldwin_home,
+            model=fake_model,
+        ),
+    )
+    await host.start()
+    client = AldwinClient(transport.connect())
+
+    try:
+        await client.connect()
+        async for _ev in client.turn("Remember this fact"):
+            pass
+
+        today_str = datetime.now().astimezone().date().isoformat()
+        note_path = aldwin_home / "memory" / "notes" / f"{today_str}.md"
+        content = note_path.read_text(encoding="utf-8")
+        assert f"src=session:{host.stored_session.meta.id} -->" in content
+    finally:
+        await client.close()
+        await host.stop_host()
 
 
 def test_memory_block_under_10ms_with_30_days_of_notes(aldwin_home: Path) -> None:

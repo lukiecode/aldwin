@@ -171,6 +171,7 @@ def build_agent(
     model: Model | None = None,
     tools: Sequence[Tool] | None = None,
     on_retry: RetryCallback | None = None,
+    session_id_getter: Callable[[], str] | None = None,
 ) -> Agent:
     """Assemble Aldwin's `Agent` from `config`, `secrets`, and `ask` (`FR-1`)."""
     root = (home if home is not None else home_dir()).expanduser().resolve()
@@ -189,7 +190,10 @@ def build_agent(
     if tools is not None:
         active_tools: tuple[Tool, ...] = tuple(tools)
     else:
-        remember_tool, recall_tool = build_memory_tools(root)
+        remember_tool, recall_tool = build_memory_tools(
+            root,
+            session_id_getter=session_id_getter,
+        )
         persona_tool = build_persona_tool(
             effective_ask,
             root,
