@@ -1,0 +1,46 @@
+name: Feature request
+description: Suggest an improvement or capability for a future version of Aldwin
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening a feature request, check the [README](https://github.com/lunarstack-co/aldwin#readme) to see what is included in `0.0.1`.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem or friction are you trying to solve?
+      description: Describe the task or workflow where you hit a limitation.
+      placeholder: "When I use Aldwin for ..., I wish I could ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should this work from the user's perspective?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which part of Aldwin does this touch?
+      options:
+        - Door (CLI / terminal experience)
+        - Brain (core / memory / persona / tools / skills)
+        - Pass & Order slip (host / sessions / protocol)
+        - Packaging / installation / documentation
+        - Not sure
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds considered
+    validations:
+      required: false

@@ -216,3 +216,19 @@ Copy and paste the filled-in template below as a comment on Linear ticket **ENG-
 | 12 | Plain mode (`NO_COLOR=1` and `--plain`) | PASS | |
 | 13 | Upgrade keeps data; `uninstall` keeps data; `--purge` deletes data | PASS | |
 ```
+
+---
+
+## 4. Release checklist (`ENG-385` `FR-8`)
+
+Tick every item below on clean **macOS** and clean **Linux** (Python 3.11+) after installing from PyPI:
+
+- [ ] `uv tool install aldwin` works on clean macOS and Linux (Python 3.11+)
+- [ ] First `aldwin` creates the folder and asks for the key; a bad key gets a clear message
+- [ ] A second `aldwin` shows and continues the previous conversation
+- [ ] `"Be more direct"` updates `persona.md` after `y/n` and persists
+- [ ] `/model` switches model mid-conversation
+- [ ] Streaming markdown, tool cards, `Esc` stops within 1 second
+- [ ] Every terminal command asks `y/n`
+- [ ] A 50-turn conversation stays fast and survives tool errors
+- [ ] `pytest` passes; Fola can explain every file in `src/aldwin`

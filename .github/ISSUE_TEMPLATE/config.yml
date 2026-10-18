@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation & architecture guide
+    url: https://github.com/lunarstack-co/aldwin#readme
+    about: Read how to install, configure, and troubleshoot Aldwin.
+  - name: Security vulnerability report
+    url: mailto:contact@lunarstack.co
+    about: Please report security vulnerabilities privately by email rather than in a public issue.
