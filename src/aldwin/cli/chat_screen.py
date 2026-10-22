@@ -15,6 +15,7 @@ from typing import Final, Protocol
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.input import Input, PipeInput, create_input
+from prompt_toolkit.input.typeahead import store_typeahead
 from prompt_toolkit.key_binding import KeyBindings, KeyPress, KeyPressEvent
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput, Output
@@ -192,9 +193,16 @@ async def _read_approval_key_detail(
         if not future.done():
             future.set_result((answer, explicit_n))
 
+    def _keep_unread(unread: list[KeyPress]) -> None:
+        # One read can contain the answer and the next line. The next prompt
+        # picks up whatever this prompt did not use.
+        if unread:
+            store_typeahead(input_dev, unread)
+
     def _handle_keys(keys: list[KeyPress]) -> None:
-        for kp in keys:
+        for index, kp in enumerate(keys):
             if future.done():
+                _keep_unread(keys[index:])
                 return
             if kp.key == Keys.ControlO:
                 if on_expand is not None:
@@ -203,12 +211,15 @@ async def _read_approval_key_detail(
             lowered = kp.data.lower() if kp.data else ""
             if lowered == "y":
                 _resolve("yes", False)
+                _keep_unread(keys[index + 1 :])
                 return
             if lowered == "a" and grantable:
                 _resolve("yes_session", False)
+                _keep_unread(keys[index + 1 :])
                 return
             if lowered == "n":
                 _resolve("no", True)
+                _keep_unread(keys[index + 1 :])
                 return
             if kp.key in (
                 Keys.Enter,
@@ -219,6 +230,7 @@ async def _read_approval_key_detail(
                 Keys.ControlD,
             ):
                 _resolve("no", False)
+                _keep_unread(keys[index + 1 :])
                 return
 
     def _flush() -> None:

@@ -94,10 +94,7 @@ async def test_chat_approval_yes_sends_approve_and_resumes(aldwin_home: Path) ->
 
         async def _send_approval_and_exit() -> None:
             await client.approval_emitted_event.wait()
-            await asyncio.sleep(0.02)
-            pipe_in.send_text("y")
-            await asyncio.sleep(0.05)
-            pipe_in.send_text("/exit\r")
+            pipe_in.send_text("y/exit\r")
 
         feeder = asyncio.create_task(_send_approval_and_exit())
         rc = await _run_chat(
@@ -435,12 +432,8 @@ async def test_approval_keys_default_no_ctrl_o_session_grant_and_decline_reason(
 
         async def _decline_with_reason() -> None:
             await client.approval_emitted_event.wait()
-            await asyncio.sleep(0.02)
-            pipe_in.send_text("n")
-            await asyncio.sleep(0.03)
-            pipe_in.send_text("only fix the heading\r")
-            await asyncio.sleep(0.03)
-            pipe_in.send_text("/exit\r")
+            # The answer, the reason, and /exit can arrive in one read.
+            pipe_in.send_text("nonly fix the heading\r/exit\r")
 
         feeder = asyncio.create_task(_decline_with_reason())
         rc = await _run_chat(
