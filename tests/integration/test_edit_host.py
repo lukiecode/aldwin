@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from fakes.model import FakeModel, FakeTurn
 
 from aldwin.client import AldwinClient
 from aldwin.core.agent import build_agent
+from aldwin.host import AldwinHost, InProcessTransport
 from aldwin.protocol import ApprovalEvent, ToolCallEvent, ToolResultEvent
+
+EditHost = tuple[AldwinClient, FakeModel, Path, AldwinHost]
+ApproveAnswer = Literal["yes", "yes_session", "no"]
 
 
 def _write(path: Path, text: str) -> None:
@@ -23,7 +29,7 @@ async def edit_host(
     aldwin_home: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-):
+) -> AsyncIterator[EditHost]:
     """In-process host with a temp workspace and the fake model."""
     root = tmp_path / "ws"
     root.mkdir()
@@ -34,7 +40,6 @@ async def edit_host(
         return real_build(config, secrets, ask, **kwargs)
 
     monkeypatch.setattr("aldwin.host.runner.build_agent", _build)
-    from aldwin.host import AldwinHost, InProcessTransport
 
     transport = InProcessTransport()
     host = AldwinHost(transport, home=aldwin_home, workspace=root)
@@ -48,9 +53,7 @@ async def edit_host(
         await host.stop_host()
 
 
-async def test_two_edits_one_step_decline_second(
-    edit_host: tuple[AldwinClient, FakeModel, Path, object],
-) -> None:
+async def test_two_edits_one_step_decline_second(edit_host: EditHost) -> None:
     """Two `edit_file` calls in one step: approvals are sequential; a no denies both."""
     client, model, root, host = edit_host
     _write(root / "a.md", "alpha\n")
@@ -86,7 +89,7 @@ async def test_two_edits_one_step_decline_second(
             assert pending is None, "two approvals pending at once"
             pending = event.approval_id
             approvals.append(event)
-            answer = "yes" if len(approvals) == 1 else "no"
+            answer: ApproveAnswer = "yes" if len(approvals) == 1 else "no"
             await client.approve(event.approval_id, answer, digest=event.digest)
             pending = None
 
@@ -105,9 +108,7 @@ async def test_two_edits_one_step_decline_second(
     assert [event.summary for event in calls] == ["Edit a.md", "Edit b.md"]
 
 
-async def test_diff_approvals_never_overlap(
-    edit_host: tuple[AldwinClient, FakeModel, Path, object],
-) -> None:
+async def test_diff_approvals_never_overlap(edit_host: EditHost) -> None:
     """A second Diff approval is only emitted after the first is answered."""
     client, model, root, host = edit_host
     _write(root / "a.md", "one\n")
