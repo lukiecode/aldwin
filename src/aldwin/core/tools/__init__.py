@@ -145,6 +145,16 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
         description="Read a text file and return numbered lines.",
         requires_approval=False,
     ),
+    ToolInfo(
+        name="edit_file",
+        description="Replace a unique exact string in a file after diff approval.",
+        requires_approval=True,
+    ),
+    ToolInfo(
+        name="write_file",
+        description="Create or overwrite a text file after diff approval.",
+        requires_approval=True,
+    ),
 )
 
 
@@ -172,8 +182,14 @@ def summarize_tool_result(
 
     for line in content.splitlines():
         stripped = line.strip()
-        if stripped:
-            return (not is_error), _shorten_summary(stripped)
+        if not stripped:
+            continue
+        # Never surface the untrusted wrapper as the CLI row summary.
+        if stripped.startswith("<untrusted ") or stripped.startswith("</untrusted"):
+            continue
+        if stripped.startswith("ToolCallError: "):
+            stripped = stripped.removeprefix("ToolCallError: ")
+        return (not is_error), _shorten_summary(stripped)
     return (not is_error), ""
 
 

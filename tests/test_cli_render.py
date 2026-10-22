@@ -7,6 +7,9 @@ import io
 from datetime import datetime, timezone
 from pathlib import Path
 
+from rich.console import Group
+from rich.text import Text
+
 from aldwin.cli.render import (
     ChatRenderer,
     clean_tool_summary,
@@ -629,6 +632,63 @@ def test_diff_approval_panel_folds_at_24_lines_and_expands() -> None:
     expanded_text = console_exp.export_text()
     assert "+added line 26" in expanded_text
     assert "more lines (ctrl+o to expand)" not in expanded_text
+
+
+def test_diff_approval_clips_long_lines_until_expanded() -> None:
+    """Folded Diff panels clip long lines; expand rebuilds without the notice."""
+    marker = "UNIQUE_LONG_MARKER_ABCDEF"
+    long_plus = "+" + ("x" * 200) + marker
+    ev = ApprovalEvent(
+        re="r1",
+        approval_id="ap_long",
+        tool="edit_file",
+        tier="diff",
+        summary="Edit a.py",
+        detail=f"--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n{long_plus}",
+        grantable=True,
+        grant_scope="file",
+    )
+
+    folded_buf = io.StringIO()
+    folded_console = create_console(
+        width=60, record=True, file=folded_buf, force_terminal=True
+    )
+    ChatRenderer(folded_console).render_approval_panel(ev, expanded=False)
+    folded = folded_console.export_text()
+    assert "long lines truncated (ctrl+o to expand)" in folded
+    assert marker not in folded
+
+    # Inspect the expanded panel renderable directly. export_text can
+    # ellipsize tall panels in some CI terminals.
+    exp_console = create_console(width=60, force_terminal=True)
+    panel = ChatRenderer(exp_console).build_approval_panel(ev, expanded=True)
+    assert isinstance(panel.renderable, Group)
+    joined = "\n".join(
+        part.plain if isinstance(part, Text) else str(part)
+        for part in panel.renderable.renderables
+    )
+    assert "long lines truncated" not in joined
+    assert marker in joined.replace("\n", "")
+
+
+def test_resolve_diff_approval_uses_summary_not_persona() -> None:
+    """Declined Diff rows echo the edit summary, not a persona.md line count."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    turn = ChatRenderer(console).start_turn()
+    ev = ApprovalEvent(
+        re="r1",
+        approval_id="ap_d",
+        tool="edit_file",
+        tier="diff",
+        summary="Edit notes.md (+1 −1)",
+        detail="--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-old\n+new",
+    )
+    turn.pause_for_approval(ev)
+    turn.resolve_approval(ev, "no")
+    text = console.export_text()
+    assert "✗ declined  Edit notes.md (+1 −1)" in text
+    assert "persona.md" not in text
 
 
 def test_tc44_verbose_help_readme(aldwin_home: Path) -> None:

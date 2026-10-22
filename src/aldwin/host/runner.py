@@ -52,7 +52,9 @@ from aldwin.core.policy import (
 )
 from aldwin.core.settings import load_config, load_secrets, update_config_model
 from aldwin.core.tools import RememberTool, summarize_tool_result
-from aldwin.core.tools.files import row_summary, running_summary
+from aldwin.core.tools import edits as edit_tools
+from aldwin.core.tools.files import row_summary as file_row_summary
+from aldwin.core.tools.files import running_summary as file_running_summary
 from aldwin.core.workspace import Workspace, format_outside_display
 from aldwin.host.in_process import InProcessTransport, WorkspaceSummary
 from aldwin.host.sessions import (
@@ -919,7 +921,11 @@ class AldwinHost:
                             call.arguments,
                         )
                         tool_start_times[call.id] = time.monotonic()
-                        running = running_summary(
+                        running = edit_tools.running_summary(
+                            call.name,
+                            call.arguments,
+                            self._workspace,
+                        ) or file_running_summary(
                             call.name,
                             call.arguments,
                             self._workspace,
@@ -963,7 +969,10 @@ class AldwinHost:
                             is_error=res.is_error,
                         )
                         running = tool_running.pop(res.tool_call_id, "")
-                        summary = row_summary(running, summary, ok=ok)
+                        if res.name in edit_tools.EDIT_TOOL_NAMES:
+                            summary = edit_tools.row_summary(running, summary, ok=ok)
+                        else:
+                            summary = file_row_summary(running, summary, ok=ok)
                         preview = ""
                         if ok:
                             preview = preview_lines(str(res.content))

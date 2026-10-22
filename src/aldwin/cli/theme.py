@@ -16,11 +16,17 @@ THEME: Final[Theme] = Theme(
         "fg": "default",
         "accent": "cyan",
         "code": "cyan",
-        "muted": "grey50",
-        "border": "grey50",
+        "muted": "bright_black",
+        "border": "bright_black",
         "ok": "green",
         "warn": "yellow",
         "err": "red",
+        "diff.plus": "green",
+        "diff.minus": "red",
+        "diff.meta": "cyan",
+        "diff.context": "default",
+        "approval.keys": "bright_black",
+        "approval.default": "bold",
         "markdown.paragraph": "default",
         "markdown.text": "default",
         "markdown.em": "italic",
@@ -28,18 +34,18 @@ THEME: Final[Theme] = Theme(
         "markdown.strong": "bold",
         "markdown.code": "cyan",
         "markdown.code_block": "cyan",
-        "markdown.block_quote": "grey50",
+        "markdown.block_quote": "bright_black",
         "markdown.list": "default",
         "markdown.item": "default",
-        "markdown.item.bullet": "grey50",
-        "markdown.item.number": "grey50",
-        "markdown.hr": "grey50",
+        "markdown.item.bullet": "bright_black",
+        "markdown.item.number": "bright_black",
+        "markdown.hr": "bright_black",
         "markdown.h1": "bold underline",
         "markdown.h2": "bold",
         "markdown.h3": "bold",
-        "markdown.h4": "bold grey50",
+        "markdown.h4": "bold bright_black",
         "markdown.h5": "italic",
-        "markdown.h6": "grey50",
+        "markdown.h6": "bright_black",
         "markdown.link": "cyan",
         "markdown.link_url": "cyan underline",
     }
@@ -88,7 +94,7 @@ def model_context_window(model: str) -> int:
 
 
 def context_left_percent(model: str, used_tokens: int) -> int:
-    """Return remaining context percentage (`0..100`) for `model` (`FR-13`)."""
+    """Return remaining context percentage (`0..100`) for `model`."""
     window = max(1, model_context_window(model))
     clamped_used = max(0, int(used_tokens))
     remaining = max(0.0, float(window - clamped_used)) / float(window) * 100.0
@@ -147,7 +153,7 @@ def create_console(
     file: IO[str] | None = None,
     force_terminal: bool | None = None,
 ) -> Console:
-    """Create the shared Rich `Console` configured with Aldwin's theme (`FR-11`)."""
+    """Create the shared Rich `Console` configured with Aldwin's theme."""
     return Console(
         theme=THEME,
         no_color=plain,
@@ -184,7 +190,7 @@ def format_relative_time(
     *,
     now: datetime | None = None,
 ) -> str:
-    """Format an ISO-8601 timestamp for the history divider (`FR-3`)."""
+    """Format an ISO-8601 timestamp for the history divider."""
     if not iso_ts:
         return "earlier"
     try:

@@ -989,7 +989,9 @@ async def test_v1_door_diff_denied_ask_works_and_disconnect_denies(
         tr_diff = [e for e in ev_diff if isinstance(e, ToolResultEvent)]
         assert len(tr_diff) == 1
         assert tr_diff[0].ok is False
-        assert "no approver" in tr_diff[0].summary
+        assert "no one to approve" in tr_diff[0].summary or (
+            "no one was available to approve" in tr_diff[0].summary
+        )
 
         # Ask-tier call on v1 door works with plain y/n without digest
         ev_ask: list[Event] = []

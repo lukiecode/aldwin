@@ -108,9 +108,7 @@ def _wake_pending_pipe_input(input_dev: Input) -> None:
 
 
 CTRL_C_QUIT_WINDOW: Final[float] = 2.0
-DECLINE_REASON_PROMPT: Final[str] = (
-    "Tell Aldwin why or what to do instead (Enter to skip): "
-)
+DECLINE_REASON_PROMPT: Final[str] = "  why? (Enter to skip): "
 
 
 class ChatClientProtocol(SlashCommandClient, Protocol):
@@ -661,6 +659,9 @@ async def _chat_loop(
                                         turn_renderer.expand_approval_panel(current_ev)
                                     ),
                                 )
+                                # Collapse the panel before the reason prompt so the
+                                # Diff box is not still glowing while the user types.
+                                turn_renderer.resolve_approval(ev, answer)
                                 if answer == "no" and explicit_n:
                                     try:
                                         raw_reason = await _prompt_line(
@@ -680,7 +681,6 @@ async def _chat_loop(
                                 digest=ev.digest or None,
                                 reason=reason,
                             )
-                            turn_renderer.resolve_approval(ev, answer)
                         elif isinstance(ev, DoneEvent):
                             turn_tokens = turn_renderer.finish_done(ev)
                             if ev.usage is not None:

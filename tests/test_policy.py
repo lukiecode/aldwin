@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from agentling import Tool
+from agentling.tools import ToolCallError
 
 from aldwin.core.approval_log import ApprovalLogger
 from aldwin.core.home import ensure_home
@@ -164,11 +165,10 @@ async def test_runtime_unknown_tool_denied_and_logged(
         ask=_ask,
         approval_log=log,
     )
-    out = await wrapped.call({})
+    with pytest.raises(ToolCallError) as caught:
+        await wrapped.call({})
     log.close()
-    assert isinstance(out, ToolOutput)
-    assert out.ok is False
-    assert str(out) == DENIAL_TEXT["policy_error"]
+    assert str(caught.value) == DENIAL_TEXT["policy_error"]
     log_text = (aldwin_home / "logs" / "approvals.jsonl").read_text(encoding="utf-8")
     assert '"source": "error"' in log_text
 
@@ -581,6 +581,41 @@ def test_clean_env_and_config_env_allow(
     )
 
 
+async def test_tool_call_error_from_prepare_skips_ask(
+    policy_session: PolicySession,
+    aldwin_home: Path,
+) -> None:
+    """`prepare_approval` ToolCallError raises without asking or a denial count."""
+    note_path = policy_session.workspace.root / "a.md"
+    note_path.write_text("hello", encoding="utf-8")
+
+    class _RaiseOnPrepare(_DummyEditTool):
+        def prepare_approval(self, path: str, content: str) -> ApprovalPreview:
+            raise ToolCallError("read the file first: a.md")
+
+    asks: list[ApprovalRequest] = []
+
+    async def _ask(req: ApprovalRequest) -> ApprovalAnswer:
+        asks.append(req)
+        return ApprovalAnswer("yes", "user")
+
+    denials_before = policy_session.turn_denials
+    wrapped = PolicyWrappedTool(
+        _RaiseOnPrepare(policy_session.workspace),
+        session=policy_session,
+        ask=_ask,
+        approval_log=ApprovalLogger(home=aldwin_home),
+    )
+    with pytest.raises(ToolCallError) as caught:
+        await wrapped.call({"path": "a.md", "content": "world"})
+
+    assert str(caught.value) == "read the file first: a.md"
+    assert asks == []
+    assert policy_session.turn_denials == denials_before
+    assert str(caught.value) != DENIAL_TEXT["policy_error"]
+    assert note_path.read_text(encoding="utf-8") == "hello"
+
+
 async def test_diff_grants_non_grantable_yes_session_mtime_recheck_and_user_reason(
     policy_session: PolicySession,
     aldwin_home: Path,
@@ -636,9 +671,9 @@ async def test_diff_grants_non_grantable_yes_session_mtime_recheck_and_user_reas
     # User says no with reason "only fix the heading"
     policy_session.clear_grants()
     answers_queue.append(ApprovalAnswer("no", "user", reason="only fix the heading"))
-    out_declined = await wrapped.call({"path": "notes.md", "content": "line 4"})
-    assert out_declined.ok is False
-    assert str(out_declined) == (
+    with pytest.raises(ToolCallError) as declined:
+        await wrapped.call({"path": "notes.md", "content": "line 4"})
+    assert str(declined.value) == (
         "Denied by the user. The tool call did not run. This decision is final: "
         "don't run it again or rephrase it. Ask the user what they want instead. "
         "The file was not changed.\nUser's reason: only fix the heading"
@@ -689,10 +724,10 @@ async def test_diff_grants_non_grantable_yes_session_mtime_recheck_and_user_reas
         ask=_ask_always_mutates,
         approval_log=log,
     )
-    out_race2 = await wrapped_race2.call({"path": "notes.md", "content": "fail race"})
+    with pytest.raises(ToolCallError) as race2:
+        await wrapped_race2.call({"path": "notes.md", "content": "fail race"})
     log.close()
-    assert out_race2.ok is False
-    assert str(out_race2) == DENIAL_TEXT["policy_error"]
+    assert str(race2.value) == DENIAL_TEXT["policy_error"]
 
 
 async def test_exceptions_in_pipeline_steps_fail_closed(
@@ -707,9 +742,9 @@ async def test_exceptions_in_pipeline_steps_fail_closed(
         raise RuntimeError("ask exploded")
 
     wrapped = PolicyWrappedTool(edit_tool, session=policy_session, ask=_raising_ask)
-    res1 = await wrapped.call({"path": "a.txt", "content": "x"})
-    assert res1.ok is False
-    assert str(res1) == DENIAL_TEXT["policy_error"]
+    with pytest.raises(ToolCallError) as res1:
+        await wrapped.call({"path": "a.txt", "content": "x"})
+    assert str(res1.value) == DENIAL_TEXT["policy_error"]
     assert edit_tool.calls == []
 
     # 2. `resolve_safe` raises unexpected exception inside `decide`
@@ -846,16 +881,18 @@ async def test_evaluate_step_batch_cancels_all_on_single_rejection(
         approval_log=log,
     )
 
-    r1 = await wrapped_tools["read_file"].call({"path": "a.txt"})
-    r2 = await wrapped_tools["edit_file"].call({"path": "a.txt", "content": "a1"})
-    r3 = await wrapped_tools["edit_file"].call({"path": "b.txt", "content": "b1"})
+    with pytest.raises(ToolCallError):
+        await wrapped_tools["read_file"].call({"path": "a.txt"})
+    with pytest.raises(ToolCallError) as r2:
+        await wrapped_tools["edit_file"].call({"path": "a.txt", "content": "a1"})
+    with pytest.raises(ToolCallError) as r3:
+        await wrapped_tools["edit_file"].call({"path": "b.txt", "content": "b1"})
     log.close()
 
     assert read_tool.calls == []
     assert edit_tool.calls == []
-    assert r1.ok is False
-    assert r2.ok is False and "The file was not changed." in str(r2)
-    assert r3.ok is False and "The file was not changed." in str(r3)
+    assert "The file was not changed." in str(r2.value)
+    assert "The file was not changed." in str(r3.value)
 
 
 async def test_policy_edge_branches_and_validation(
@@ -972,11 +1009,11 @@ async def test_policy_edge_branches_and_validation(
         _CmdPreviewTool(), session=policy_session, ask=_yes_ask
     )
     assert wrapped_cmd.inner_tool.name == "run_command"
-    non_dict_res = await wrapped_cmd.call("not_a_dict")  # type: ignore[arg-type]
-    assert non_dict_res.ok is False
+    with pytest.raises(ToolCallError):
+        await wrapped_cmd.call("not_a_dict")  # type: ignore[arg-type]
 
-    err_val = await wrapped_cmd.call({"command": "invalid_custom"})
-    assert err_val.ok is False
+    with pytest.raises(ToolCallError):
+        await wrapped_cmd.call({"command": "invalid_custom"})
 
     policy_session.reset_turn()
     short_ok = await wrapped_cmd.call({"command": "echo hi"})
@@ -1022,9 +1059,9 @@ async def test_policy_edge_branches_and_validation(
     wrapped_edit_no = PolicyWrappedTool(
         edit_tool, session=policy_session, ask=_reask_then_no
     )
-    out_reask_no = await wrapped_edit_no.call({"path": "reask_no.md", "content": "v2"})
-    assert out_reask_no.ok is False
-    assert "changed on disk" in str(out_reask_no)
+    with pytest.raises(ToolCallError) as reask_no:
+        await wrapped_edit_no.call({"path": "reask_no.md", "content": "v2"})
+    assert "changed on disk" in str(reask_no.value)
 
     # Batch with only Auto calls returns early
     policy_session.reset_turn()
@@ -1135,10 +1172,9 @@ async def test_escaped_search_pattern_tells_the_model_to_stay_inside(
         raise AssertionError("a denied pattern must not ask")
 
     wrapped = PolicyWrappedTool(_GlobTool(), session=policy_session, ask=_ask)
-    out = await wrapped.call({"pattern": "../x", "path": "."})
-    assert out.ok is False
-    assert "stay inside its folder" in out
-    assert out.summary == "blocked: pattern"
+    with pytest.raises(ToolCallError) as caught:
+        await wrapped.call({"pattern": "../x", "path": "."})
+    assert "stay inside its folder" in str(caught.value)
 
 
 def test_denial_text_no_approver_and_blank_reason() -> None:
@@ -1257,13 +1293,18 @@ async def test_wrapped_sudo_asks_then_runs(
         timeout=5,
     )
     wrapped = PolicyWrappedTool(inner, session=policy_session, ask=_ask)
-    out = await wrapped.call({"command": "sudo -n true"})
+    try:
+        out_text = str(await wrapped.call({"command": "sudo -n true"}))
+    except ToolCallError as exc:
+        # Non-zero exit (e.g. password required) is raised as ToolCallError
+        # so Agentling marks the tool result as an error.
+        out_text = str(exc)
     assert len(asked) == 1
     assert "runs as admin" in asked[0].risky
-    assert "sudo is not allowed" not in str(out)
+    assert "sudo is not allowed" not in out_text
     # A successful run is wrapped in <untrusted>, so the exit line is not
     # always the first character. CI runners can run sudo without a password.
-    assert "exit " in str(out)
+    assert "exit " in out_text
 
 
 async def test_wrapped_command_saves_full_stdout(
@@ -1296,6 +1337,83 @@ async def test_wrapped_command_saves_full_stdout(
     assert len(saved) == 1
     assert payload in saved[0].read_text(encoding="utf-8")
     assert payload not in str(out)
+
+
+def test_policy_wrapped_disables_agentling_outer_trim() -> None:
+    """Wrapped tools must not let Agentling strip `ToolOutput.summary`."""
+    from aldwin.core.tools import ToolOutput
+
+    class _BigRead(Tool):
+        name = "read_file"
+        description = "Read"
+        parameters: dict[str, Any] = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        }
+        max_output_chars = 4_000
+
+        async def forward(self, path: str) -> ToolOutput:  # type: ignore[override]
+            return ToolOutput("x" * 20_000, summary=f"Read {path} · lines 1–1 of 1")
+
+    # Build wrapper without a real session ask path; only inspect caps.
+    from unittest.mock import MagicMock
+
+    session = MagicMock()
+    wrapped = PolicyWrappedTool(
+        _BigRead(),
+        session=session,
+        ask=MagicMock(),
+    )
+    assert wrapped.timeout == float("inf")
+    assert wrapped.max_output_chars == 1_000_000_000
+
+
+async def test_policy_wrapped_approval_wait_ignores_agent_tool_timeout(
+    policy_session: PolicySession,
+) -> None:
+    """Human Diff/Ask time must not trip Agentling's outer `tool_timeout`."""
+    import asyncio
+
+    from agentling import Agent, ToolResultEvent
+    from fakes.model import FakeModel, FakeTurn
+
+    note = policy_session.workspace.root / "notes.md"
+    note.write_text("old\n", encoding="utf-8")
+    policy_session.mark_read("notes.md")
+
+    async def _slow_yes(_req: ApprovalRequest) -> ApprovalAnswer:
+        await asyncio.sleep(0.2)
+        return ApprovalAnswer("yes", "user")
+
+    wrapped = PolicyWrappedTool(
+        _DummyEditTool(policy_session.workspace),
+        session=policy_session,
+        ask=_slow_yes,
+    )
+    assert wrapped.timeout == float("inf")
+
+    model = FakeModel(
+        turns=[
+            FakeTurn.tool_call(
+                "edit_file",
+                {"path": "notes.md", "content": "new\n"},
+                call_id="c1",
+            ),
+            FakeTurn.text(["done"]),
+        ]
+    )
+    agent = Agent(model=model, tools=[wrapped], tool_timeout=0.05)
+    session = agent.start()
+    results = [
+        ev.result
+        async for ev in session.run("edit", stream=True, reset=False)
+        if isinstance(ev, ToolResultEvent)
+    ]
+    assert len(results) == 1
+    assert results[0].is_error is False
+    assert "ToolTimeoutError" not in results[0].content
+    assert note.read_text(encoding="utf-8") == "new\n"
 
 
 def test_decide_stays_cheap(policy_session: PolicySession) -> None:

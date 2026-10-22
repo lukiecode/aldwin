@@ -224,14 +224,45 @@ def _tool_word(count: int) -> str:
 
 
 def _approval_record_target(event: ApprovalEvent) -> str:
+    summary = event.summary.strip()
+    # Diff summaries already name the file (+/−); don't treat the hunk as persona.
+    if event.tier == "diff":
+        return summary
     detail = event.detail.strip()
     if not detail:
-        return event.summary.strip()
-    if "\n" in detail or "persona" in event.summary.lower():
+        return summary
+    if "\n" in detail or "persona" in summary.lower():
         line_count = len(detail.splitlines())
         unit = "line" if line_count == 1 else "lines"
         return f"persona.md ({line_count} {unit})"
     return detail
+
+
+def _diff_line_style(line: str, *, plain: bool) -> str:
+    """Return the theme style for one unified-diff line."""
+    if plain:
+        return ""
+    if line.startswith("+") and not line.startswith("+++"):
+        return "diff.plus"
+    if line.startswith("-") and not line.startswith("---"):
+        return "diff.minus"
+    if line.startswith(("@@", "---", "+++")):
+        return "diff.meta"
+    return "diff.context"
+
+
+def _append_approval_keys(body: Text, *, grantable: bool, folder: bool = False) -> None:
+    """Append the yes/no key legend with No as the visual default."""
+    if folder:
+        body.append("[y] yes for this folder this session", style="approval.keys")
+        body.append("  ", style="approval.keys")
+        body.append("[N] no", style="approval.default")
+        return
+    body.append("[y] yes", style="approval.keys")
+    if grantable:
+        body.append("  [a] yes for this file this session", style="approval.keys")
+    body.append("  ", style="approval.keys")
+    body.append("[N] no", style="approval.default")
 
 
 class ChatRenderer:
@@ -333,17 +364,17 @@ class ChatRenderer:
         *,
         expanded: bool = False,
     ) -> Panel:
-        """Construct the yellow bordered approval `Panel`."""
+        """Construct the approval `Panel` (muted border; yellow only for risk)."""
         clean_summary = sanitize_display_text(event.summary.strip())
         clean_detail = sanitize_display_text(event.detail.strip())
         detail_text = clean_detail or clean_summary
-        body = Text()
+        panel_width = _panel_width(self.console)
+        # Panel padding=(0,1) + borders: keep folded diff lines scannable.
+        inner_width = max(24, panel_width - 4)
 
         risky_labels = [
             sanitize_display_text(lbl) for lbl in event.risky if lbl and lbl.strip()
         ]
-        if risky_labels:
-            body.append(f"⚠ {' · '.join(risky_labels)}\n", style="warn")
 
         if event.tier == "diff":
             lines = detail_text.splitlines() or [detail_text]
@@ -354,58 +385,90 @@ class ChatRenderer:
                 shown_lines = lines
                 more_count = 0
 
-            for idx, line in enumerate(shown_lines):
-                if idx > 0:
-                    body.append("\n")
-                if self.plain:
-                    line_style = ""
-                elif line.startswith("+") and not line.startswith("+++"):
-                    line_style = "ok"
-                elif line.startswith("-") and not line.startswith("---"):
-                    line_style = "err"
-                elif line.startswith(("@@", "---", "+++")):
-                    line_style = "accent"
+            diff_parts: list[RenderableType] = []
+            if risky_labels:
+                diff_parts.append(Text(f"⚠ {' · '.join(risky_labels)}", style="warn"))
+            truncated_long = 0
+            for line in shown_lines:
+                style = _diff_line_style(line, plain=self.plain)
+                # Folded: clip long lines so the panel stays scannable.
+                # Expanded: hard-wrap ourselves. Rich Panel soft-wrap can
+                # collapse a tall Group to one ellipsized row in some terminals.
+                if not expanded and len(line) > inner_width:
+                    truncated_long += 1
+                    diff_parts.append(
+                        Text(
+                            _cap_text_width(line, inner_width),
+                            style=style,
+                            overflow="ellipsis",
+                            no_wrap=True,
+                        )
+                    )
+                elif expanded and len(line) > inner_width:
+                    for start in range(0, len(line), inner_width):
+                        diff_parts.append(
+                            Text(
+                                line[start : start + inner_width],
+                                style=style,
+                                overflow="ellipsis",
+                                no_wrap=True,
+                            )
+                        )
                 else:
-                    line_style = "fg"
-                body.append(line, style=line_style)
+                    diff_parts.append(
+                        Text(
+                            line,
+                            style=style,
+                            overflow="ellipsis",
+                            no_wrap=True,
+                        )
+                    )
 
             if more_count > 0:
-                body.append(
-                    f"\n… {more_count} more lines (ctrl+o to expand)",
-                    style="muted",
+                diff_parts.append(
+                    Text(
+                        f"… {more_count} more lines (ctrl+o to expand)",
+                        style="muted",
+                    )
+                )
+            elif truncated_long > 0:
+                diff_parts.append(
+                    Text(
+                        "… long lines truncated (ctrl+o to expand)",
+                        style="muted",
+                    )
                 )
 
-            if event.grantable:
-                body.append(
-                    "\n\n[y] yes  [a] yes for this file this session  [N] no",
-                    style="warn",
-                )
-            else:
-                body.append("\n\n[y] yes  [N] no", style="warn")
+            keys = Text()
+            _append_approval_keys(keys, grantable=event.grantable)
+            diff_parts.append(Text(""))
+            diff_parts.append(keys)
+            body_renderable: RenderableType = Group(*diff_parts)
         else:
+            body = Text()
+            if risky_labels:
+                body.append(f"⚠ {' · '.join(risky_labels)}\n", style="warn")
             is_multiline = "\n" in detail_text or bool(risky_labels)
             detail_style = (
                 "" if self.plain else ("fg" if "\n" in detail_text else "code")
             )
             body.append(detail_text, style=detail_style)
             if event.grantable:
-                sep = "\n\n" if is_multiline else "  "
-                body.append(
-                    f"{sep}[y] yes for this folder this session  [N] no",
-                    style="warn",
-                )
+                body.append("\n\n" if is_multiline else "  ")
+                _append_approval_keys(body, grantable=True, folder=True)
             else:
-                separator = (
-                    "\n\n[y] yes  [N] no" if is_multiline else "  [y] yes  [N] no"
-                )
-                body.append(separator, style="warn")
+                body.append("\n\n" if is_multiline else "  ")
+                _append_approval_keys(body, grantable=False)
+            body_renderable = body
 
+        # Yellow border only when something is labelled risky; Diff is quiet grey.
+        border = "warn" if risky_labels else "border"
         return Panel(
-            body,
+            body_renderable,
             title=clean_summary or "Approve action?",
             title_align="left",
-            border_style="warn",
-            width=_panel_width(self.console),
+            border_style="" if self.plain else border,
+            width=panel_width,
             padding=(0, 1),
         )
 

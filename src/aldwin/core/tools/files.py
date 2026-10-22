@@ -116,11 +116,16 @@ def row_summary(running: str, summary: str, *, ok: bool) -> str:
     """Rewrite a denial row. Successful tool summaries stay as the tool wrote them."""
     if ok or not running:
         return summary
-    if summary == "declined":
+    lower = summary.lower()
+    if summary == "declined" or "denied by the user" in lower:
         return f"{running} · declined"
-    if summary == "blocked: pattern":
+    if summary == "not run: no approver" or "no one was available to approve" in lower:
+        return f"{running} · not run: no one to approve"
+    if summary == "blocked: pattern" or "search pattern must stay inside" in lower:
         return f"{running} · blocked: pattern must stay inside the search folder"
-    if summary.startswith("blocked:") and "secret" in summary:
+    if (summary.startswith("blocked:") and "secret" in lower) or (
+        "blocked because it may hold secrets" in lower
+    ):
         return f"{running} · blocked: may contain secrets"
     return summary
 
