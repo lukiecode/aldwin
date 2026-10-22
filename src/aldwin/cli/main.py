@@ -4,18 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from typing import TYPE_CHECKING
 
 import typer
 
 from aldwin import __version__
-from aldwin.client import (
-    BootstrapResult,
-    ClientBootstrapError,
-    PlatformNotSupportedError,
-    bootstrap,
-    get_onboarding_status,
-    purge_home_data,
-)
+
+if TYPE_CHECKING:
+    from aldwin.client import BootstrapResult
 
 app = typer.Typer(
     name="aldwin",
@@ -24,6 +20,17 @@ app = typer.Typer(
     rich_markup_mode="rich",
     add_completion=False,
 )
+
+
+def _load_client():
+    """Import the client only when a command needs the host.
+
+    `--version` must stay under half a second, so the module body does not
+    import the policy engine, pathspec, or tzlocal.
+    """
+    import aldwin.client as client
+
+    return client
 
 
 def _is_interactive_tty() -> bool:
@@ -46,6 +53,7 @@ async def _launch_interactive_session(
     from aldwin.cli.chat_screen import run_chat
     from aldwin.cli.onboarding import needs_onboarding, run_onboarding
     from aldwin.cli.theme import create_console
+    from aldwin.client import get_onboarding_status
 
     console = create_console(plain=result.plain)
     had_env_key = get_onboarding_status(result.home).openai_source == "env"
@@ -90,15 +98,24 @@ def main(
         "--debug",
         help="Write debug-level events to ~/.aldwin/logs/aldwin.log.",
     ),
+    workspace: str | None = typer.Option(
+        None,
+        "--workspace",
+        help="Set the workspace root directory for this session.",
+    ),
 ) -> None:
     """Launch Aldwin interactive chat (or run a subcommand)."""
     _ = version
     if ctx.invoked_subcommand is not None:
         return
 
+    client = _load_client()
     try:
-        result = bootstrap(plain=plain, debug=debug)
-    except (PlatformNotSupportedError, ClientBootstrapError) as exc:
+        result = client.bootstrap(plain=plain, debug=debug, workspace=workspace)
+    except client.WorkspaceError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    except (client.PlatformNotSupportedError, client.ClientBootstrapError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
 
@@ -125,9 +142,10 @@ def setup(
     ),
 ) -> None:
     """Configure API keys and default model."""
+    client = _load_client()
     try:
-        result = bootstrap(plain=plain, debug=False)
-    except (PlatformNotSupportedError, ClientBootstrapError) as exc:
+        result = client.bootstrap(plain=plain, debug=False)
+    except (client.PlatformNotSupportedError, client.ClientBootstrapError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
 
@@ -149,9 +167,10 @@ def uninstall(
     ),
 ) -> None:
     """Uninstall Aldwin (keeps ~/.aldwin unless --purge is passed)."""
+    client = _load_client()
     try:
-        result = bootstrap(plain=True, debug=False)
-    except (PlatformNotSupportedError, ClientBootstrapError) as exc:
+        result = client.bootstrap(plain=True, debug=False)
+    except (client.PlatformNotSupportedError, client.ClientBootstrapError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None
 
@@ -180,7 +199,7 @@ def uninstall(
             typer.echo("Folder name did not match. Aborted; your data was not deleted.")
             raise typer.Exit(code=1)
 
-        purge_home_data(result.home)
+        client.purge_home_data(result.home)
         typer.echo(f"Deleted {result.display_home}.")
     else:
         typer.echo(f"Your data in {result.display_home} is untouched.")

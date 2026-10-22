@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from aldwin.host import InProcessTransport
 from aldwin.protocol import (
     PROTOCOL_VERSION,
+    VERSION,
     ApprovalEvent,
     ApproveRequest,
     DoneEvent,
@@ -21,11 +22,20 @@ from aldwin.protocol import (
     HistoryEvent,
     HistoryItem,
     HistoryRequest,
+    NoticeEvent,
     Request,
     SetModelRequest,
+    SkillBodyEvent,
+    SkillCatalogItem,
+    SkillsEvent,
+    SkillsListRequest,
+    SkillsUsedEvent,
     StatusEvent,
     StopRequest,
     TextEvent,
+    TodoGetRequest,
+    TodoItem,
+    TodoUpdatedEvent,
     TokenUsage,
     ToolCallEvent,
     ToolResultEvent,
@@ -48,7 +58,7 @@ from aldwin.protocol import (
     ],
 )
 def test_every_request_round_trips_json(request_msg: Request) -> None:
-    """TC-01: Every Request message round-trips through JSON."""
+    """Every Request message round-trips through JSON."""
     raw = request_msg.model_dump_json()
     parsed = parse_request(raw)
     assert parsed == request_msg
@@ -107,7 +117,7 @@ def test_every_request_round_trips_json(request_msg: Request) -> None:
     ],
 )
 def test_every_event_round_trips_json(event_msg: Event) -> None:
-    """TC-01: Every Event message round-trips through JSON."""
+    """Every Event message round-trips through JSON."""
     raw = event_msg.model_dump_json()
     parsed = parse_event(raw)
     assert parsed == event_msg
@@ -120,7 +130,7 @@ def test_every_event_round_trips_json(event_msg: Event) -> None:
 
 
 def test_unknown_fields_are_ignored_in_requests_and_events() -> None:
-    """TC-02: Unknown fields are ignored in both directions."""
+    """Unknown fields are ignored in both directions."""
     req_json = json.dumps(
         {
             "v": 1,
@@ -169,7 +179,7 @@ def test_unknown_fields_are_ignored_in_requests_and_events() -> None:
     ],
 )
 def test_invalid_requests_are_rejected(bad_request_payload: dict[str, object]) -> None:
-    """TC-16: Invalid request discriminators and field bounds raise ValidationError."""
+    """Invalid request discriminators and field bounds raise ValidationError."""
     with pytest.raises(ValidationError):
         parse_request(json.dumps(bad_request_payload))
 
@@ -192,13 +202,13 @@ def test_invalid_requests_are_rejected(bad_request_payload: dict[str, object]) -
     ],
 )
 def test_invalid_events_are_rejected(bad_event_payload: dict[str, object]) -> None:
-    """TC-16: Invalid event discriminators, missing `re`, or wrong `type` fail."""
+    """Invalid event discriminators, missing `re`, or wrong `type` fail."""
     with pytest.raises(ValidationError):
         parse_event(json.dumps(bad_event_payload))
 
 
 def test_protocol_imports_only_stdlib_and_pydantic() -> None:
-    """TC-15: `src/aldwin/protocol` imports only stdlib and `pydantic`."""
+    """`src/aldwin/protocol` imports only stdlib and `pydantic`."""
     protocol_dir = (
         Path(__file__).resolve().parent.parent / "src" / "aldwin" / "protocol"
     )
@@ -225,7 +235,7 @@ def test_protocol_imports_only_stdlib_and_pydantic() -> None:
 
 
 async def test_in_process_transport_round_trips_and_closes_cleanly() -> None:
-    """TC-19: `InProcessTransport` round-trips requests/events and closes cleanly."""
+    """`InProcessTransport` round-trips requests/events and closes cleanly."""
     new_conv_called = False
 
     async def on_new() -> None:
@@ -261,7 +271,7 @@ async def test_in_process_transport_round_trips_and_closes_cleanly() -> None:
 
 
 async def test_in_process_transport_rejects_send_after_close() -> None:
-    """TC-19: Sending a request after `close()` raises RuntimeError."""
+    """Sending a request after `close` raises RuntimeError."""
     transport = InProcessTransport()
     client_handle = transport.connect()
     await transport.close()
@@ -271,3 +281,82 @@ async def test_in_process_transport_rejects_send_after_close() -> None:
         await client_handle.send(HelloRequest(id="req_1"))
 
     await transport.send_event(DoneEvent(re="req_1", reason="ok"))
+
+
+def test_protocol_v2_messages_round_trip() -> None:
+    """Protocol v2 messages and approval fields round-trip through JSON."""
+    assert PROTOCOL_VERSION == 2
+    assert VERSION == 2
+
+    v2_requests: list[Request] = [
+        HelloRequest(id="req_h2", v_min=1, v_max=2),
+        TurnRequest(id="req_t2", text="Fix typo", skills=["files"]),
+        ApproveRequest(
+            id="req_a2",
+            approval_id="ap_12",
+            answer="yes_session",
+            digest="sha256:9f2c",
+            reason="ignored on yes_session",
+        ),
+        ApproveRequest(
+            id="req_a3",
+            approval_id="ap_13",
+            answer="no",
+            digest="sha256:9f2c",
+            reason="x" * 350,
+        ),
+        SkillsListRequest(id="req_sl"),
+        TodoGetRequest(id="req_tg"),
+    ]
+    for req in v2_requests:
+        parsed_req = parse_request(req.model_dump_json())
+        assert parsed_req == req
+
+    # Reason is stripped on non-"no" and capped to 280 chars on "no"
+    ap_yes_sess = v2_requests[2]
+    assert isinstance(ap_yes_sess, ApproveRequest)
+    assert ap_yes_sess.reason is None
+
+    ap_no = v2_requests[3]
+    assert isinstance(ap_no, ApproveRequest)
+    assert ap_no.reason == "x" * 280
+
+    v2_events: list[Event] = [
+        ApprovalEvent(
+            re="req_t2",
+            approval_id="ap_12",
+            tool="edit_file",
+            tier="diff",
+            summary="Edit notes.md",
+            detail="--- a/notes.md\n+++ b/notes.md",
+            grantable=True,
+            grant_scope="file",
+            digest="sha256:9f2c",
+            risky=["recursive delete"],
+        ),
+        TodoUpdatedEvent(
+            re="req_t2",
+            items=[
+                TodoItem(text="Read bills", status="done"),
+                TodoItem(text="Write CSV", status="in_progress"),
+            ],
+            done=1,
+            total=2,
+        ),
+        SkillsEvent(
+            re="req_sl",
+            items=[
+                SkillCatalogItem(
+                    name="files",
+                    description="Work with files safely.",
+                    source="default",
+                )
+            ],
+        ),
+        SkillsUsedEvent(re="req_t2", names=["files"], dropped=["missing"]),
+        SkillBodyEvent(re="req_sl", name="files", body="# Files skill"),
+        NoticeEvent(re="req_t2", message="skills reloaded"),
+    ]
+    for ev in v2_events:
+        parsed_ev = parse_event(ev.model_dump_json())
+        assert parsed_ev == ev

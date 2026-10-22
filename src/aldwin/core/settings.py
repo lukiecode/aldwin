@@ -40,9 +40,16 @@ _EXPECTED_FIELD_TYPES: Final[dict[str, str]] = {
     "limits.notes_days": "an integer >= 1",
     "limits.persona_chars": "an integer >= 100",
     "limits.max_steps": "an integer >= 1",
+    "run_command": "a mapping of run_command settings",
+    "run_command.env_allow": "a list of environment variable names",
     "openai_api_key": "a string API key",
     "tavily_api_key": "a string API key",
 }
+
+_SECRET_ENV_ALLOW_RE: Final[re.Pattern[str]] = re.compile(
+    r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL",
+    re.IGNORECASE,
+)
 
 
 class ConfigError(Exception):
@@ -73,6 +80,14 @@ class LimitsConfig(BaseModel):
     max_steps: StrictInt = Field(default=15, ge=1)
 
 
+class RunCommandConfig(BaseModel):
+    """Shell command environment configuration from ``config.yaml``."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    env_allow: list[str] = Field(default_factory=list)
+
+
 class AldwinConfig(BaseModel):
     """Top-level user configuration from ``~/.aldwin/config.yaml``."""
 
@@ -81,6 +96,7 @@ class AldwinConfig(BaseModel):
     model: str = Field(default="gpt-4o", min_length=1)
     theme: Literal["default", "plain"] = "default"
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    run_command: RunCommandConfig = Field(default_factory=RunCommandConfig)
 
 
 def mask_secret(value: str | SecretStr | None) -> str:
@@ -228,9 +244,36 @@ def _warn_unknown_config_keys(raw: dict[str, Any], config_path: Path) -> None:
         for key in sorted(set(raw_limits.keys()) - known_limits):
             logger.warning("Ignoring unknown key 'limits.%s' in %s", key, config_path)
 
+    raw_run_cmd = raw.get("run_command")
+    if isinstance(raw_run_cmd, dict):
+        known_run_cmd = set(RunCommandConfig.model_fields.keys())
+        for key in sorted(set(raw_run_cmd.keys()) - known_run_cmd):
+            logger.warning(
+                "Ignoring unknown key 'run_command.%s' in %s",
+                key,
+                config_path,
+            )
+
+
+def _filter_secret_env_allow(names: list[str]) -> list[str]:
+    """Filter secret-shaped variable names from `run_command.env_allow`."""
+    safe: list[str] = []
+    for raw_name in names:
+        cleaned = raw_name.strip()
+        if not cleaned:
+            continue
+        if _SECRET_ENV_ALLOW_RE.search(cleaned):
+            logger.warning(
+                "run_command.env_allow: %s ignored (looks like a secret)",
+                cleaned,
+            )
+            continue
+        safe.append(cleaned)
+    return safe
+
 
 def load_config(home: Path | None = None) -> AldwinConfig:
-    """Load and validate ``config.yaml`` from ``home`` (or ``home_dir()``).
+    """Load and validate ``config.yaml`` from ``home`` (or ``home_dir``).
 
     Returns default ``AldwinConfig`` if the file does not exist or is empty.
     Logs warnings for unknown keys and raises ``ConfigError`` on invalid YAML or
@@ -264,9 +307,11 @@ def load_config(home: Path | None = None) -> AldwinConfig:
     _warn_unknown_config_keys(parsed, config_path)
     if "limits" in parsed and parsed["limits"] is None:
         parsed = {**parsed, "limits": {}}
+    if "run_command" in parsed and parsed["run_command"] is None:
+        parsed = {**parsed, "run_command": {}}
 
     try:
-        return AldwinConfig.model_validate(parsed)
+        cfg = AldwinConfig.model_validate(parsed)
     except ValidationError as exc:
         first = exc.errors()[0]
         loc = ".".join(str(part) for part in first.get("loc", ())) or "<root>"
@@ -276,6 +321,13 @@ def load_config(home: Path | None = None) -> AldwinConfig:
             field=loc,
             expected=expected,
         ) from None
+
+    if cfg.run_command.env_allow:
+        filtered = _filter_secret_env_allow(cfg.run_command.env_allow)
+        cfg = cfg.model_copy(
+            update={"run_command": RunCommandConfig(env_allow=filtered)}
+        )
+    return cfg
 
 
 def update_config_model(model: str, home: Path | None = None) -> None:

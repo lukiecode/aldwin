@@ -8,7 +8,9 @@ import time
 from pathlib import Path
 
 from fakes.host import FakeClient
+from prompt_toolkit.input import Input
 from prompt_toolkit.input.defaults import create_pipe_input
+from rich.console import Console
 
 from aldwin.cli.chat_screen import (
     TurnKeyListener,
@@ -18,7 +20,7 @@ from aldwin.cli.chat_screen import (
     run_chat,
 )
 from aldwin.cli.theme import PLAIN_PROMPT_STYLE, create_console
-from aldwin.client import bootstrap
+from aldwin.client import BootstrapResult, bootstrap
 from aldwin.protocol import (
     ApprovalEvent,
     DoneEvent,
@@ -28,9 +30,29 @@ from aldwin.protocol import (
     ToolResultEvent,
 )
 
+_CHAT_TIMEOUT_S = 10
+
+
+async def _run_chat(
+    boot: BootstrapResult,
+    *,
+    client: FakeClient,
+    console: Console,
+    input_dev: Input,
+) -> int:
+    """Run one chat session, and fail the test if it never returns.
+
+    A missed pipe wakeup used to block ``prompt_async`` until the CI job was
+    killed, which looks like a stuck pytest step.
+    """
+    return await asyncio.wait_for(
+        run_chat(boot, client=client, console=console, input_dev=input_dev),
+        timeout=_CHAT_TIMEOUT_S,
+    )
+
 
 async def test_chat_approval_yes_sends_approve_and_resumes(aldwin_home: Path) -> None:
-    """TC-07: approval event + y shows panel, rings bell, approves, and resumes."""
+    """approval event + y shows panel, rings bell, approves, and resumes."""
     _ = aldwin_home
     boot = bootstrap(plain=False)
     client = FakeClient()
@@ -72,13 +94,10 @@ async def test_chat_approval_yes_sends_approve_and_resumes(aldwin_home: Path) ->
 
         async def _send_approval_and_exit() -> None:
             await client.approval_emitted_event.wait()
-            await asyncio.sleep(0.02)
-            pipe_in.send_text("y")
-            await asyncio.sleep(0.05)
-            pipe_in.send_text("/exit\r")
+            pipe_in.send_text("y/exit\r")
 
         feeder = asyncio.create_task(_send_approval_and_exit())
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,
@@ -92,13 +111,13 @@ async def test_chat_approval_yes_sends_approve_and_resumes(aldwin_home: Path) ->
     text = console.export_text()
     assert "Run this command?" in text
     assert "df -h" in text
-    assert "[y/n]" in text
+    assert "[N] no" in text
     assert "You have 41 GB free." in text
     assert "Saved. See you." in text
 
 
 async def test_chat_approval_escape_and_enter_send_no() -> None:
-    """TC-08: read_approval_key resolves Esc, n, and Enter as 'no'."""
+    """read_approval_key resolves Esc, n, and Enter as 'no'."""
     with create_pipe_input() as pipe_esc:
         pipe_esc.send_text("\x1b")
         ans_esc = await asyncio.wait_for(read_approval_key(pipe_esc), timeout=0.5)
@@ -116,7 +135,7 @@ async def test_chat_approval_escape_and_enter_send_no() -> None:
 
 
 async def test_escape_during_stream_stops_under_one_second(aldwin_home: Path) -> None:
-    """TC-09: Esc during stream sends stop in < 1 s and prints (stopped)."""
+    """Esc during stream sends stop in < 1 s and prints (stopped)."""
     _ = aldwin_home
     boot = bootstrap(plain=True)
     client = FakeClient()
@@ -142,7 +161,7 @@ async def test_escape_during_stream_stops_under_one_second(aldwin_home: Path) ->
             pipe_in.send_text("/exit\r")
 
         feeder = asyncio.create_task(_press_esc_then_exit())
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,
@@ -161,7 +180,7 @@ async def test_escape_during_stream_stops_under_one_second(aldwin_home: Path) ->
 async def test_prompt_input_bindings_empty_ignored_and_toolbar(
     aldwin_home: Path,
 ) -> None:
-    """TC-20: Alt+Enter inserts newline, empty input ignored, toolbar formatted."""
+    """Alt+Enter inserts newline, empty input ignored, toolbar formatted."""
     _ = aldwin_home
     assert (
         format_bottom_toolbar("gpt-4o", "2026-10-18_3f2a9b1c", 6200)
@@ -179,7 +198,7 @@ async def test_prompt_input_bindings_empty_ignored_and_toolbar(
         pipe_in.send_text("   \r")
         pipe_in.send_text("line1\x1b\rline2\r")
         pipe_in.send_text("/exit\r")
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,
@@ -193,7 +212,7 @@ async def test_prompt_input_bindings_empty_ignored_and_toolbar(
 async def test_turn_key_listener_ignores_arrow_sequences_and_flushes_bare_escape() -> (
     None
 ):
-    """TC-23: TurnKeyListener ignores \\x1b[A arrow sequence and flushes bare \\x1b."""
+    """TurnKeyListener ignores \\x1b[A arrow sequence and flushes bare \\x1b."""
     escape_calls = 0
     ctrl_c_calls = 0
 
@@ -225,7 +244,7 @@ async def test_turn_key_listener_ignores_arrow_sequences_and_flushes_bare_escape
 async def test_ctrl_c_once_warns_twice_quits_and_ctrl_d_saves_and_exits(
     aldwin_home: Path,
 ) -> None:
-    """TC-24: Ctrl-C once warns, twice quits; Ctrl-D saves and exits 0."""
+    """Ctrl-C once warns, twice quits; Ctrl-D saves and exits 0."""
     _ = aldwin_home
     boot = bootstrap(plain=True)
 
@@ -236,7 +255,7 @@ async def test_ctrl_c_once_warns_twice_quits_and_ctrl_d_saves_and_exits(
     with create_pipe_input() as pipe_a:
         pipe_a.send_text("\x03")
         pipe_a.send_text("\x03")
-        rc_a = await run_chat(
+        rc_a = await _run_chat(
             boot,
             client=client_a,
             console=console_a,
@@ -254,7 +273,7 @@ async def test_ctrl_c_once_warns_twice_quits_and_ctrl_d_saves_and_exits(
     console_b = create_console(plain=True, width=80, record=True, file=buf_b)
     with create_pipe_input() as pipe_b:
         pipe_b.send_text("\x04")
-        rc_b = await run_chat(
+        rc_b = await _run_chat(
             boot,
             client=client_b,
             console=console_b,
@@ -285,7 +304,7 @@ async def test_chat_slash_command_status_and_error_events(aldwin_home: Path) -> 
         pipe_in.send_text("/help\r")
         pipe_in.send_text("trigger retry and error\r")
         pipe_in.send_text("/exit\r")
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,
@@ -302,7 +321,7 @@ async def test_chat_slash_command_status_and_error_events(aldwin_home: Path) -> 
 async def test_ctrl_c_during_turn_stops_then_second_ctrl_c_quits(
     aldwin_home: Path,
 ) -> None:
-    """FR-9: Ctrl-C during a turn stops the turn; second Ctrl-C saves and quits."""
+    """Ctrl-C during a turn stops the turn; second Ctrl-C saves and quits."""
     _ = aldwin_home
     boot = bootstrap(plain=True)
     client = FakeClient()
@@ -323,7 +342,7 @@ async def test_ctrl_c_during_turn_stops_then_second_ctrl_c_quits(
             pipe_in.send_text("\x03")
 
         feeder = asyncio.create_task(_send_ctrl_c_twice())
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,
@@ -342,7 +361,7 @@ async def test_ctrl_c_during_turn_stops_then_second_ctrl_c_quits(
 async def test_backslash_enter_and_ctrl_j_insert_newlines_and_plain_style(
     aldwin_home: Path,
 ) -> None:
-    """TC-10 & TC-12: `\\`+Enter and `Ctrl+J` insert newlines; plain is `noreverse`."""
+    """`\\`+Enter and `Ctrl+J` insert newlines; plain is `noreverse`."""
     with create_pipe_input() as pipe_in:
         session = build_prompt_session(
             aldwin_home,
@@ -355,3 +374,78 @@ async def test_backslash_enter_and_ctrl_j_insert_newlines_and_plain_style(
         pipe_in.send_text("first line\\\rsecond line\x0athird line\r")
         result = await session.prompt_async("› ")
         assert result == "first line\nsecond line\nthird line"
+
+
+async def test_approval_keys_default_no_ctrl_o_session_grant_and_decline_reason(
+    aldwin_home: Path,
+) -> None:
+    """`Ctrl+O` expands, `a` grants session, `n` collects reason."""
+    _ = aldwin_home
+    expanded_count = 0
+
+    def _on_expand() -> None:
+        nonlocal expanded_count
+        expanded_count += 1
+
+    with create_pipe_input() as pipe_a:
+        pipe_a.send_text("\x0fa")
+        ans_a = await asyncio.wait_for(
+            read_approval_key(pipe_a, grantable=True, on_expand=_on_expand),
+            timeout=0.5,
+        )
+        assert ans_a == "yes_session"
+        assert expanded_count == 1
+
+    # When `grantable=False`, pressing `a` is ignored until a valid key arrives
+    with create_pipe_input() as pipe_no_grant:
+        pipe_no_grant.send_text("ay")
+        ans_ng = await asyncio.wait_for(
+            read_approval_key(pipe_no_grant, grantable=False),
+            timeout=0.5,
+        )
+        assert ans_ng == "yes"
+
+    # Full chat loop: user presses `n` and enters a reason
+    boot = bootstrap(plain=True)
+    client = FakeClient()
+    client.queue_turn(
+        [
+            ApprovalEvent(
+                re="r1",
+                approval_id="ap_edit",
+                tool="edit_file",
+                tier="diff",
+                summary="Edit notes.md",
+                detail="--- a/notes.md\n+++ b/notes.md\n-old\n+new",
+                grantable=True,
+                grant_scope="file",
+                digest="sha256:1234",
+            ),
+            DoneEvent(re="r1", reason="answered"),
+        ]
+    )
+
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    with create_pipe_input() as pipe_in:
+        pipe_in.send_text("fix notes\r")
+
+        async def _decline_with_reason() -> None:
+            await client.approval_emitted_event.wait()
+            # The answer, the reason, and /exit can arrive in one read.
+            pipe_in.send_text("nonly fix the heading\r/exit\r")
+
+        feeder = asyncio.create_task(_decline_with_reason())
+        rc = await _run_chat(
+            boot,
+            client=client,
+            console=console,
+            input_dev=pipe_in,
+        )
+        await feeder
+
+    assert rc == 0
+    assert client.approval_details == [
+        ("ap_edit", "no", "sha256:1234", "only fix the heading")
+    ]
+    assert "✗ declined" in console.export_text()

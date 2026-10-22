@@ -86,7 +86,7 @@ unset OPENAI_API_KEY TAVILY_API_KEY ALDWIN_HOME NO_COLOR
   3. Ask `Please check free disk space with df -h again.`
   4. When the approval panel appears, press `y`.
 - **Expected:**
-  - Terminal rings the bell (`\a`) and displays the bordered `Run this command?` panel with `df -h  [y/n]`.
+  - Terminal rings the bell (`\a`) and displays the bordered `Run this command?` panel with `df -h  [y] yes  [N] no`.
   - Pressing `n` prints `✗ declined  df -h` and `✗ run_command  declined`; command does **not** run; Aldwin acknowledges the decline.
   - Pressing `y` prints `✓ approved  df -h` and `✓ run_command  <duration> · exit 0`, and Aldwin reports the free disk space.
 - [ ] Pass / Fail

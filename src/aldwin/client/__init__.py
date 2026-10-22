@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from aldwin.host.in_process import (
@@ -17,6 +18,10 @@ from aldwin.host.in_process import (
     SkillsReport,
     SkillSummary,
     ToolInfo,
+    WorkspaceError,
+    WorkspaceNotAllowedError,
+    WorkspaceNotFoundError,
+    WorkspaceSummary,
     bootstrap_host,
     check_openai_key,
     get_builtin_tools,
@@ -30,6 +35,8 @@ from aldwin.host.in_process import (
     open_in_process_client,
     pop_profile_truncation_warning,
     purge_home_data,
+    resolve_workspace_summary,
+    sanitize_display_text,
     save_setup,
 )
 
@@ -37,9 +44,14 @@ if TYPE_CHECKING:
     from aldwin.client.client import AldwinClient, ProtocolError
 
 
-def bootstrap(*, plain: bool = False, debug: bool = False) -> BootstrapResult:
+def bootstrap(
+    *,
+    plain: bool = False,
+    debug: bool = False,
+    workspace: Path | str | None = None,
+) -> BootstrapResult:
     """Initialise the Aldwin host and return startup metadata for the door."""
-    return bootstrap_host(plain=plain, debug=debug)
+    return bootstrap_host(plain=plain, debug=debug, workspace=workspace)
 
 
 def __getattr__(name: str) -> Any:
@@ -66,6 +78,10 @@ __all__ = [
     "SkillSummary",
     "SkillsReport",
     "ToolInfo",
+    "WorkspaceError",
+    "WorkspaceNotAllowedError",
+    "WorkspaceNotFoundError",
+    "WorkspaceSummary",
     "bootstrap",
     "check_openai_key",
     "get_builtin_tools",
@@ -79,5 +95,7 @@ __all__ = [
     "open_in_process_client",
     "pop_profile_truncation_warning",
     "purge_home_data",
+    "resolve_workspace_summary",
+    "sanitize_display_text",
     "save_setup",
 ]

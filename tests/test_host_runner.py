@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import httpx
 import openai
@@ -45,7 +45,7 @@ from aldwin.protocol import (
 
 
 class GatedCommandTool(Tool):
-    """Test tool that awaits `ask()` before running."""
+    """Test tool that awaits `ask` before running."""
 
     name = "run_command"
     description = "Run a shell command after approval."
@@ -76,7 +76,7 @@ async def _collect_turn(client: AldwinClient, text: str) -> list[Event]:
 
 
 async def test_request_scope_enforces_exactly_one_terminal_event() -> None:
-    """TC-18: `RequestScope` prevents double terminal events and handles crashes."""
+    """`RequestScope` prevents double terminal events and handles crashes."""
     emitted: list[Event] = []
 
     async def record(event: Event) -> None:
@@ -118,7 +118,7 @@ async def test_requests_before_hello_are_rejected_and_version_negotiated(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-03 & TC-17: Pre-`hello` requests and version mismatches are rejected."""
+    """Pre-`hello` requests and version mismatches are rejected."""
     ensure_home(aldwin_home)
     transport = InProcessTransport()
     host = AldwinHost(
@@ -140,7 +140,7 @@ async def test_requests_before_hello_are_rejected_and_version_negotiated(
             assert ev.re == req.id
             assert ev.code == "protocol"
 
-        await handle.send(HelloRequest(id="r_bad_ver", v_min=2, v_max=3))
+        await handle.send(HelloRequest(id="r_bad_ver", v_min=3, v_max=4))
         ver_ev = await transport.next_event()
         assert isinstance(ver_ev, ErrorEvent)
         assert ver_ev.re == "r_bad_ver"
@@ -164,7 +164,7 @@ async def test_plain_answer_streams_five_deltas_then_done_with_usage(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-04: 5 streamed deltas arrive in order (< 50 ms) then `done(answered)`."""
+    """5 streamed deltas arrive in order (< 50 ms) then `done(answered)`."""
     ensure_home(aldwin_home)
     fake_model.add_turns(
         FakeTurn.text(
@@ -206,7 +206,7 @@ async def test_tool_call_and_result_mapping_with_120_char_truncation(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-05 & TC-20: Tool events carry 120-char previews; full output saved."""
+    """Tool events carry 120-char previews; full output saved."""
     ensure_home(aldwin_home)
 
     @tool
@@ -265,7 +265,7 @@ async def test_error_classification_saves_session_and_hides_tracebacks(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-06 & TC-22: Model and internal errors emit friendly ErrorEvents."""
+    """Model and internal errors emit friendly ErrorEvents."""
     ensure_home(aldwin_home)
     log_path = setup_logging(aldwin_home)
 
@@ -330,7 +330,7 @@ async def test_stop_mid_stream_saves_partial_answer_and_resumes_cleanly(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-07 & TC-25: `stop` mid-stream emits `done(stopped)` and saves partial text."""
+    """`stop` mid-stream emits `done(stopped)` and saves partial text."""
     ensure_home(aldwin_home)
     hang_turn = FakeTurn.hang(prefix_chunks=["Part ", "one"])
     fake_model.add_turns(
@@ -393,7 +393,7 @@ async def test_approvals_yes_no_stop_and_unknown_approval_id(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-08, TC-09, TC-21, TC-25: Approval yes/no, stop during approval, unknown ID."""
+    """Approval yes/no, stop during approval, unknown ID."""
     ensure_home(aldwin_home)
     cmd_tool_holder: list[GatedCommandTool] = []
 
@@ -445,7 +445,7 @@ async def test_approvals_yes_no_stop_and_unknown_approval_id(
         assert len(tool_results) == 1
         assert "user declined" in tool_results[0].summary
 
-        # 3. Stop while waiting for approval (TC-08)
+        # 3. Stop while waiting for approval
         turn3_events: list[Event] = []
         stale_approval_id = ""
         async for ev in client.turn("run sleep"):
@@ -459,12 +459,12 @@ async def test_approvals_yes_no_stop_and_unknown_approval_id(
         assert isinstance(turn3_events[-1], DoneEvent)
         assert turn3_events[-1].reason == "stopped"
 
-        # 4. Unknown / already-cancelled approval ID (TC-21)
+        # 4. Unknown / already-cancelled approval ID
         unknown_res = await client.approve(stale_approval_id, "yes")
         assert isinstance(unknown_res, ErrorEvent)
         assert unknown_res.code == "unknown_approval"
 
-        # 5. Follow-up turn after mid-approval stop has valid messages (TC-25)
+        # 5. Follow-up turn after mid-approval stop has valid messages
         turn4_events = await _collect_turn(client, "continue")
         assert isinstance(turn4_events[-1], DoneEvent)
         assert turn4_events[-1].reason == "answered"
@@ -483,7 +483,7 @@ async def test_second_turn_while_busy_returns_busy_error(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-10: A second `turn` while busy returns `error(busy)`; first turn finishes."""
+    """A second `turn` while busy returns `error(busy)`; first turn finishes."""
     ensure_home(aldwin_home)
     hang_turn = FakeTurn.hang(prefix_chunks=["Working..."])
     fake_model.add_turns(hang_turn)
@@ -529,7 +529,7 @@ async def test_max_steps_maps_to_done_reason_max_steps(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-13: Reaching `max_steps` emits `DoneEvent(reason='max_steps')`."""
+    """Reaching `max_steps` emits `DoneEvent(reason='max_steps')`."""
     ensure_home(aldwin_home)
 
     @tool
@@ -571,7 +571,7 @@ async def test_set_model_switches_model_preserves_memory_and_rejects_unknown(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-27: `set_model` rebuilds agent, keeps memory, and rejects unknown models."""
+    """`set_model` rebuilds agent, keeps memory, and rejects unknown models."""
     ensure_home(aldwin_home)
     built_models: list[str] = []
 
@@ -621,7 +621,7 @@ async def test_fifty_turn_conversation_one_terminal_event_each_and_fast_saves(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-14: 50-turn run emits one terminal event per turn and saves in < 20 ms."""
+    """50-turn run emits one terminal event per turn and saves in < 20 ms."""
     ensure_home(aldwin_home)
 
     @tool
@@ -684,7 +684,7 @@ async def test_client_connect_raises_protocol_error_on_version_mismatch(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """`client.connect()` raises `ProtocolError` if handshake fails."""
+    """`client.connect` raises `ProtocolError` if handshake fails."""
     ensure_home(aldwin_home)
     transport = InProcessTransport()
     host = AldwinHost(
@@ -696,7 +696,7 @@ async def test_client_connect_raises_protocol_error_on_version_mismatch(
 
     try:
         with pytest.raises(ProtocolError) as exc_info:
-            await client.connect(v_min=2, v_max=3)
+            await client.connect(v_min=3, v_max=4)
         assert exc_info.value.code == "version_mismatch"
     finally:
         await client.close()
@@ -707,7 +707,7 @@ async def test_turn_direct_final_answer_emits_text_with_zero_tools(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-02: Single-step `final_answer` emits `TextEvent` and zero tool cards."""
+    """Single-step `final_answer` emits `TextEvent` and zero tool cards."""
     ensure_home(aldwin_home)
     fake_model.add_turns(
         FakeTurn.final_answer_tool("Direct reply via tool.", call_id="c_fa")
@@ -745,7 +745,7 @@ async def test_turn_final_answer_with_streamed_prefix_does_not_duplicate(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-03: `final_answer` matching streamed text does not duplicate `TextEvent`."""
+    """`final_answer` matching streamed text does not duplicate `TextEvent`."""
     ensure_home(aldwin_home)
     fake_model.add_turns(
         FakeTurn.final_answer_tool(
@@ -778,7 +778,7 @@ async def test_turn_malformed_final_answer_error_recovers(
     aldwin_home: Path,
     fake_model: FakeModel,
 ) -> None:
-    """TC-04: Malformed `final_answer({})` (`is_error=True`) continues to next step."""
+    """Malformed `final_answer({})` (`is_error=True`) continues to next step."""
     ensure_home(aldwin_home)
     fake_model.add_turns(
         FakeTurn.tool_call("final_answer", {}, call_id="c_bad_fa"),
@@ -808,7 +808,7 @@ async def test_turn_malformed_final_answer_error_recovers(
 
 
 def test_format_args_preview_unwraps_long_arguments_without_raw_json() -> None:
-    """TC-07: `format_args_preview` unwraps primary string fields before truncating."""
+    """`format_args_preview` unwraps primary string fields before truncating."""
     long_cmd = "echo " + ("a" * 150)
     long_query = "python " + ("b" * 150)
     long_url = "https://example.com/" + ("c" * 150)
@@ -830,3 +830,276 @@ def test_format_args_preview_unwraps_long_arguments_without_raw_json() -> None:
     assert url_preview.startswith("https://example.com/cccc")
     assert url_preview.endswith("…")
     assert not url_preview.startswith("{")
+
+
+async def test_approve_with_mismatched_digest_is_ignored_and_logged(
+    aldwin_home: Path,
+    tmp_path: Path,
+    fake_model: FakeModel,
+) -> None:
+    """Right `approval_id` with wrong `digest` is ignored and logged."""
+    ensure_home(aldwin_home)
+    ws_dir = tmp_path / "ws"
+    ws_dir.mkdir()
+
+    fake_model.add_turns(
+        FakeTurn.tool_call("run_command", {"command": "echo hi"}, call_id="c_dig"),
+        FakeTurn.text(["Done."]),
+    )
+    transport = InProcessTransport()
+    host = AldwinHost(transport, home=aldwin_home, workspace=ws_dir, agent_builder=None)
+    host._agent.model = fake_model
+    host._agent_session = host._agent.start()
+    await host.start()
+    client = AldwinClient(transport.connect())
+
+    try:
+        await client.connect()
+        events: list[Event] = []
+        async for ev in client.turn("say hi"):
+            events.append(ev)
+            if isinstance(ev, ApprovalEvent):
+                assert ev.digest.startswith("sha256:")
+                # 1. Wrong digest -> ignored, logged as error, approval remains pending
+                await client.approve(
+                    ev.approval_id,
+                    "yes",
+                    digest="sha256:0000000000000000",
+                )
+                assert host._approvals.has_pending is True
+                # 2. Matching digest -> resolves approval
+                await client.approve(
+                    ev.approval_id,
+                    "yes",
+                    digest=ev.digest,
+                )
+
+        assert isinstance(events[-1], DoneEvent)
+        assert events[-1].reason == "answered"
+        log_text = (aldwin_home / "logs" / "approvals.jsonl").read_text(
+            encoding="utf-8"
+        )
+        assert '"reason": "approval digest mismatch"' in log_text
+    finally:
+        await client.close()
+        await host.stop_host()
+
+
+async def test_three_denials_in_one_turn_triggers_circuit_breaker_and_resets(
+    aldwin_home: Path,
+    tmp_path: Path,
+    fake_model: FakeModel,
+) -> None:
+    """Three denials in one turn stop the turn; count resets on next turn."""
+    ensure_home(aldwin_home)
+    ws_dir = tmp_path / "ws"
+    ws_dir.mkdir()
+
+    fake_model.add_turns(
+        FakeTurn.tool_call("run_command", {"command": "echo 1"}, call_id="c_d1"),
+        FakeTurn.tool_call("run_command", {"command": "echo 2"}, call_id="c_d2"),
+        FakeTurn.tool_call("run_command", {"command": "echo 3"}, call_id="c_d3"),
+        FakeTurn.text(["Should not be reached in turn 1."]),
+    )
+
+    transport = InProcessTransport()
+    host = AldwinHost(transport, home=aldwin_home, workspace=ws_dir)
+    host._agent.model = fake_model
+    host._agent_session = host._agent.start()
+    await host.start()
+    client = AldwinClient(transport.connect())
+
+    try:
+        await client.connect()
+        turn1_events: list[Event] = []
+        async for ev in client.turn("run 3 commands"):
+            turn1_events.append(ev)
+            if isinstance(ev, ApprovalEvent):
+                await client.approve(ev.approval_id, "no", digest=ev.digest)
+
+        tool_results = [e for e in turn1_events if isinstance(e, ToolResultEvent)]
+        assert len(tool_results) == 3
+        assert tool_results[2].summary == "Stopped after 3 declined actions."
+        assert isinstance(turn1_events[-1], DoneEvent)
+        assert turn1_events[-1].reason == "stopped"
+
+        # Turn 2: count resets to 0
+        fake_model._turns.clear()
+        fake_model.add_turns(
+            FakeTurn.tool_call("run_command", {"command": "echo ok"}, call_id="c_ok"),
+            FakeTurn.text(["Succeeded in turn 2."]),
+        )
+        turn2_events: list[Event] = []
+        async for ev in client.turn("run 1 command"):
+            turn2_events.append(ev)
+            if isinstance(ev, ApprovalEvent):
+                await client.approve(ev.approval_id, "yes", digest=ev.digest)
+
+        assert host.policy_session.turn_denials == 0
+        assert isinstance(turn2_events[-1], DoneEvent)
+        assert turn2_events[-1].reason == "answered"
+    finally:
+        await client.close()
+        await host.stop_host()
+
+
+async def test_v1_door_diff_denied_ask_works_and_disconnect_denies(
+    aldwin_home: Path,
+    tmp_path: Path,
+    fake_model: FakeModel,
+) -> None:
+    """v1 door denies Diff, allows Ask, and disconnect denies."""
+    ensure_home(aldwin_home)
+    ws_dir = tmp_path / "ws"
+    ws_dir.mkdir()
+
+    fake_model.add_turns(
+        FakeTurn.tool_call(
+            "set_persona",
+            {"new_text": "Be concise."},
+            call_id="c_v1_diff",
+        ),
+        FakeTurn.text(["Persona was not changed."]),
+        FakeTurn.tool_call(
+            "run_command", {"command": "echo v1_ok"}, call_id="c_v1_ask"
+        ),
+        FakeTurn.text(["Command ran."]),
+        FakeTurn.tool_call(
+            "run_command",
+            {"command": "echo disconnect"},
+            call_id="c_disc",
+        ),
+    )
+
+    transport = InProcessTransport()
+    host = AldwinHost(transport, home=aldwin_home, workspace=ws_dir)
+    host._agent.model = fake_model
+    host._agent_session = host._agent.start()
+    await host.start()
+    client = AldwinClient(transport.connect())
+
+    try:
+        # Negotiate v1 (`hello(v_min=1, v_max=1)`)
+        await client.connect(v_min=1, v_max=1)
+        assert host.negotiated_version == 1
+
+        # Diff-tier call on v1 door is denied with `source="no_approver"`
+        ev_diff = await _collect_turn(client, "update persona")
+        assert not any(isinstance(e, ApprovalEvent) for e in ev_diff)
+        tr_diff = [e for e in ev_diff if isinstance(e, ToolResultEvent)]
+        assert len(tr_diff) == 1
+        assert tr_diff[0].ok is False
+        assert "no approver" in tr_diff[0].summary
+
+        # Ask-tier call on v1 door works with plain y/n without digest
+        ev_ask: list[Event] = []
+        async for ev in client.turn("run echo"):
+            ev_ask.append(ev)
+            if isinstance(ev, ApprovalEvent):
+                assert ev.v == 1
+                assert ev.digest == ""
+                await client.approve(ev.approval_id, "yes")
+        tr_ask = [e for e in ev_ask if isinstance(e, ToolResultEvent)]
+        assert len(tr_ask) == 1 and tr_ask[0].ok is True
+
+        # Door disconnects while approval is pending -> `source="no_approver"`
+        async for ev in client.turn("disconnect mid approval"):
+            if isinstance(ev, ApprovalEvent):
+                await client.close()
+                break
+        await asyncio.sleep(0.05)
+        log_text = (aldwin_home / "logs" / "approvals.jsonl").read_text(
+            encoding="utf-8"
+        )
+        assert '"source": "no_approver"' in log_text
+    finally:
+        await client.close()
+        await host.stop_host()
+
+
+async def test_batch_step_decline_second_edit_runs_no_tools_in_step(
+    aldwin_home: Path,
+    tmp_path: Path,
+    fake_model: FakeModel,
+) -> None:
+    """Step calls `read_file` + 2 `edit_file`s; `no` on 2nd runs none."""
+    from aldwin.core.policy import wrap_tools_with_policy
+    from aldwin.core.tools import ToolOutput
+
+    ensure_home(aldwin_home)
+    ws_dir = tmp_path / "ws"
+    ws_dir.mkdir()
+    (ws_dir / "a.txt").write_text("a0", encoding="utf-8")
+    (ws_dir / "b.txt").write_text("b0", encoding="utf-8")
+
+    executed: list[str] = []
+
+    class _ReadTool(Tool):
+        name = "read_file"
+        description = "Read file."
+        parameters: dict[str, Any] = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        }
+
+        async def forward(self, path: str) -> ToolOutput:  # type: ignore[override]
+            executed.append(f"read:{path}")
+            return ToolOutput("a0", summary=f"Read {path}", ok=True)
+
+    class _EditTool(Tool):
+        name = "edit_file"
+        description = "Edit file."
+        parameters: dict[str, Any] = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+        }
+
+        async def forward(self, path: str, content: str) -> ToolOutput:  # type: ignore[override]
+            executed.append(f"edit:{path}:{content}")
+            return ToolOutput("edited", summary=f"Edit {path}", ok=True)
+
+    fake_model.add_turns(
+        FakeTurn(
+            tool_calls=[
+                ("c_r1", "read_file", {"path": "a.txt"}),
+                ("c_e1", "edit_file", {"path": "a.txt", "content": "a1"}),
+                ("c_e2", "edit_file", {"path": "b.txt", "content": "b1"}),
+            ]
+        ),
+        FakeTurn.text(["Skipped edits."]),
+    )
+
+    transport = InProcessTransport()
+    host = AldwinHost(transport, home=aldwin_home, workspace=ws_dir)
+    wrapped = wrap_tools_with_policy(
+        [_ReadTool(), _EditTool()],
+        session=host.policy_session,
+        ask=host.ask_policy,
+        approval_log=host._approval_log,
+    )
+    host._agent = Agent(model=fake_model, tools=wrapped)
+    host._agent_session = host._agent.start()
+    await host.start()
+    client = AldwinClient(transport.connect())
+
+    try:
+        await client.connect()
+        approvals_seen = 0
+        events: list[Event] = []
+        async for ev in client.turn("read and edit"):
+            events.append(ev)
+            if isinstance(ev, ApprovalEvent):
+                approvals_seen += 1
+                ans: Literal["yes", "no"] = "yes" if approvals_seen == 1 else "no"
+                await client.approve(ev.approval_id, ans, digest=ev.digest)
+
+        assert approvals_seen == 2
+        assert executed == []
+        results = [e for e in events if isinstance(e, ToolResultEvent)]
+        assert len(results) == 3
+        assert all(not r.ok for r in results)
+    finally:
+        await client.close()
+        await host.stop_host()

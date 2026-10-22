@@ -82,9 +82,12 @@ class ToolOutput(str):
         )
 
 
+ToolOutcome = ToolOutput
+
+
 @dataclass(frozen=True, slots=True)
 class ToolInfo:
-    """One-line descriptor for `/tools` in the CLI (`FR-7`)."""
+    """One-line descriptor for `/tools` in the CLI."""
 
     name: str
     description: str
@@ -141,7 +144,7 @@ def summarize_tool_result(
     *,
     is_error: bool = False,
 ) -> tuple[bool, str]:
-    """Return `(ok, one_line_summary)` for a completed tool call (`FR-5`)."""
+    """Return `(ok, one_line_summary)` for a completed tool call."""
     del name
     if isinstance(content, ToolOutput):
         ok = False if is_error else content.ok
@@ -165,7 +168,7 @@ def builtin_tools(
     persona_cap: int | None = None,
     session_id_getter: Callable[[], str] | None = None,
 ) -> list[Tool]:
-    """Return the fixed 6 built-in tools for Aldwin 0.0.1 (`FR-6`)."""
+    """Return the fixed 6 built-in tools for Aldwin 0.0.1."""
     from aldwin.core.persona import DEFAULT_PERSONA_CAP
     from aldwin.core.tools.memory_tools import build_memory_tools
     from aldwin.core.tools.persona_tool import build_persona_tool
@@ -204,7 +207,7 @@ def builtin_tools(
 
 
 def list_builtin_tools() -> list[ToolInfo]:
-    """Return one-line descriptions of the built-in tools for `/tools` (`FR-7`)."""
+    """Return one-line descriptions of the built-in tools for `/tools`."""
     return list(_BUILTIN_TOOL_CATALOG)
 
 
@@ -228,6 +231,7 @@ __all__ = [
     "RememberTool",
     "SetPersonaTool",
     "ToolInfo",
+    "ToolOutcome",
     "ToolOutput",
     "build_memory_tools",
     "build_persona_tool",

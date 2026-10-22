@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import select
 import sys
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, ExitStack, contextmanager
 from pathlib import Path
+from types import TracebackType
 from typing import Final, Protocol
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.input import Input, PipeInput, create_input
+from prompt_toolkit.input.typeahead import store_typeahead
 from prompt_toolkit.key_binding import KeyBindings, KeyPress, KeyPressEvent
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput, Output
@@ -46,6 +49,7 @@ from aldwin.protocol import (
     ErrorEvent,
     Event,
     HistoryEvent,
+    NoticeEvent,
     StatusEvent,
     TextEvent,
     ToolCallEvent,
@@ -53,7 +57,60 @@ from aldwin.protocol import (
 )
 
 ESCAPE_FLUSH_DELAY: Final[float] = 0.05
+
+
+def _wake_pending_pipe_input(input_dev: Input) -> None:
+    """Drain a pipe that already holds bytes when a reader attaches.
+
+    ``add_reader`` wakes up when a pipe *becomes* readable. The chat tests write
+    the first line before the prompt is listening, so those bytes are already
+    in the pipe. A busy CI runner can miss that, and ``prompt_async`` then
+    waits until the job is killed. If ``select`` can see the bytes, schedule
+    one read as soon as the reader attaches.
+    """
+    if not isinstance(input_dev, PipeInput):
+        return
+    if getattr(input_dev, "_aldwin_wakes_pending", False):
+        return
+
+    original_attach = input_dev.attach
+
+    def attach(callback: Callable[[], None]):
+        context = original_attach(callback)
+
+        class _DrainOnEnter:
+            def __enter__(self) -> None:
+                context.__enter__()
+                try:
+                    fd = input_dev.fileno()
+                    ready, _, _ = select.select([fd], [], [], 0)
+                except (OSError, ValueError):
+                    return
+                if not ready:
+                    return
+                try:
+                    asyncio.get_running_loop().call_soon(callback)
+                except RuntimeError:
+                    return
+
+            def __exit__(
+                self,
+                exc_type: type[BaseException] | None,
+                exc: BaseException | None,
+                tb: TracebackType | None,
+            ) -> bool | None:
+                return context.__exit__(exc_type, exc, tb)
+
+        return _DrainOnEnter()
+
+    setattr(input_dev, "attach", attach)
+    setattr(input_dev, "_aldwin_wakes_pending", True)
+
+
 CTRL_C_QUIT_WINDOW: Final[float] = 2.0
+DECLINE_REASON_PROMPT: Final[str] = (
+    "Tell Aldwin why or what to do instead (Enter to skip): "
+)
 
 
 class ChatClientProtocol(SlashCommandClient, Protocol):
@@ -77,6 +134,9 @@ class ChatClientProtocol(SlashCommandClient, Protocol):
         self,
         approval_id: str,
         answer: ApprovalAnswer,
+        *,
+        digest: str | None = None,
+        reason: str | None = None,
     ) -> DoneEvent | ErrorEvent: ...
 
     async def close(self) -> None: ...
@@ -103,26 +163,65 @@ def format_bottom_toolbar(
 async def read_approval_key(
     input_dev: Input,
     *,
+    grantable: bool = False,
+    on_expand: Callable[[], None] | None = None,
     escape_delay: float = ESCAPE_FLUSH_DELAY,
 ) -> ApprovalAnswer:
-    """Read a single `y`/`n`/`Enter`/`Esc` key for an approval prompt (`FR-8`)."""
+    """Read `y`/`a`/`n`/`Enter`/`Esc`/`Ctrl-O` for an approval prompt."""
+    answer, _explicit_n = await _read_approval_key_detail(
+        input_dev,
+        grantable=grantable,
+        on_expand=on_expand,
+        escape_delay=escape_delay,
+    )
+    return answer
+
+
+async def _read_approval_key_detail(
+    input_dev: Input,
+    *,
+    grantable: bool = False,
+    on_expand: Callable[[], None] | None = None,
+    escape_delay: float = ESCAPE_FLUSH_DELAY,
+) -> tuple[ApprovalAnswer, bool]:
+    """Return `(answer, pressed_explicit_n)` for an approval prompt."""
     loop = asyncio.get_running_loop()
-    future: asyncio.Future[ApprovalAnswer] = loop.create_future()
+    future: asyncio.Future[tuple[ApprovalAnswer, bool]] = loop.create_future()
     flush_handle: asyncio.TimerHandle | None = None
 
-    def _resolve(answer: ApprovalAnswer) -> None:
+    def _resolve(answer: ApprovalAnswer, explicit_n: bool = False) -> None:
         if not future.done():
-            future.set_result(answer)
+            future.set_result((answer, explicit_n))
+
+    def _keep_unread(unread: list[KeyPress]) -> None:
+        # One read can contain the answer and the next line. The next prompt
+        # picks up whatever this prompt did not use.
+        if unread:
+            store_typeahead(input_dev, unread)
 
     def _handle_keys(keys: list[KeyPress]) -> None:
-        for kp in keys:
+        for index, kp in enumerate(keys):
             if future.done():
+                _keep_unread(keys[index:])
                 return
+            if kp.key == Keys.ControlO:
+                if on_expand is not None:
+                    on_expand()
+                continue
             lowered = kp.data.lower() if kp.data else ""
             if lowered == "y":
-                _resolve("yes")
+                _resolve("yes", False)
+                _keep_unread(keys[index + 1 :])
                 return
-            if lowered == "n" or kp.key in (
+            if lowered == "a" and grantable:
+                _resolve("yes_session", False)
+                _keep_unread(keys[index + 1 :])
+                return
+            if lowered == "n":
+                _resolve("no", True)
+                _keep_unread(keys[index + 1 :])
+                return
+            if kp.key in (
                 Keys.Enter,
                 Keys.ControlM,
                 Keys.ControlJ,
@@ -130,14 +229,15 @@ async def read_approval_key(
                 Keys.ControlC,
                 Keys.ControlD,
             ):
-                _resolve("no")
+                _resolve("no", False)
+                _keep_unread(keys[index + 1 :])
                 return
 
     def _flush() -> None:
         try:
             flushed = input_dev.flush_keys()
         except Exception:
-            _resolve("no")
+            _resolve("no", False)
             return
         _handle_keys(flushed)
 
@@ -147,12 +247,12 @@ async def read_approval_key(
             flush_handle.cancel()
             flush_handle = None
         if input_dev.closed:
-            _resolve("no")
+            _resolve("no", False)
             return
         try:
             keys = input_dev.read_keys()
         except Exception:
-            _resolve("no")
+            _resolve("no", False)
             return
         _handle_keys(keys)
         if not future.done():
@@ -164,7 +264,7 @@ async def read_approval_key(
         stack.enter_context(input_dev.attach(_on_ready))
     except (EOFError, NotImplementedError, OSError):
         stack.close()
-        return "no"
+        return "no", False
 
     try:
         return await future
@@ -175,12 +275,11 @@ async def read_approval_key(
 
 
 class TurnKeyListener:
-    """Listens for `Esc` and `Ctrl-C` on `input_dev` while a turn is running (`FR-9`).
+    """Listens for `Esc` and `Ctrl-C` on `input_dev` while a turn is running.
 
     Uses `input_dev.raw_mode()` + `input_dev.attach()` on the shared `asyncio`
     event loop and schedules a `50 ms` `flush_keys()` timer so bare `Esc` is
-    flushed promptly without misinterpreting multi-byte arrow or `Alt` sequences
-    (`OQ-2`, `OQ-3`).
+    flushed promptly without misinterpreting multi-byte arrow or `Alt` sequences.
     """
 
     def __init__(
@@ -268,7 +367,7 @@ class TurnKeyListener:
 
     @contextmanager
     def paused(self) -> Iterator[None]:
-        """Temporarily detach the listener while an approval key is read (`FR-8`)."""
+        """Temporarily detach the listener while an approval key is read."""
         self._paused = True
         self._detach()
         try:
@@ -351,7 +450,7 @@ async def run_chat(
     input_dev: Input | None = None,
     output_dev: Output | None = None,
 ) -> int:
-    """Run the main Aldwin interactive chat loop (`FR-3` to `FR-12`)."""
+    """Run the main Aldwin interactive chat loop."""
     _ = debug
     active_console = console or create_console(plain=boot.plain)
     renderer = ChatRenderer(active_console, plain=boot.plain)
@@ -392,6 +491,7 @@ async def run_chat(
     ctx: AbstractAsyncContextManager[ChatClientProtocol] = open_in_process_client(
         initial_model=boot.model,
         home=boot.home,
+        workspace=boot.workspace,
     )
     async with ctx as live_client:
         return await _chat_loop(
@@ -415,6 +515,7 @@ async def _chat_loop(
     owns_input: bool,
     skip_welcome: bool = False,
 ) -> int:
+    _wake_pending_pipe_input(input_dev)
     console = renderer.console
     last_context_tokens = 0
     last_ctrl_c_at = 0.0
@@ -457,6 +558,7 @@ async def _chat_loop(
                 first_run=False,
                 model=client.model,
                 display_home=boot.display_home,
+                display_workspace=boot.display_workspace or None,
             )
         renderer.render_history(history_ev, updated_at=client.updated_at)
 
@@ -545,11 +647,39 @@ async def _chat_loop(
                             turn_renderer.on_tool_result(ev)
                         elif isinstance(ev, StatusEvent):
                             turn_renderer.on_status(ev.message)
+                        elif isinstance(ev, NoticeEvent):
+                            turn_renderer.on_status(ev.message)
                         elif isinstance(ev, ApprovalEvent):
-                            turn_renderer.pause_for_approval(ev)
+                            current_ev = ev
+                            turn_renderer.pause_for_approval(current_ev)
+                            reason: str | None = None
                             with listener.paused():
-                                answer = await read_approval_key(input_dev)
-                            await client.approve(ev.approval_id, answer)
+                                answer, explicit_n = await _read_approval_key_detail(
+                                    input_dev,
+                                    grantable=current_ev.grantable,
+                                    on_expand=lambda: (
+                                        turn_renderer.expand_approval_panel(current_ev)
+                                    ),
+                                )
+                                if answer == "no" and explicit_n:
+                                    try:
+                                        raw_reason = await _prompt_line(
+                                            DECLINE_REASON_PROMPT
+                                        )
+                                        cleaned_reason = raw_reason.strip()
+                                        if (
+                                            cleaned_reason
+                                            and not cleaned_reason.startswith("/")
+                                        ):
+                                            reason = cleaned_reason[:280]
+                                    except (EOFError, KeyboardInterrupt):
+                                        reason = None
+                            await client.approve(
+                                ev.approval_id,
+                                answer,
+                                digest=ev.digest or None,
+                                reason=reason,
+                            )
                             turn_renderer.resolve_approval(ev, answer)
                         elif isinstance(ev, DoneEvent):
                             turn_tokens = turn_renderer.finish_done(ev)

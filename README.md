@@ -122,13 +122,26 @@ Aldwin lists available skill names and descriptions in the system prompt and loa
 
 ## Safety model
 
-Web pages can contain prompt-injection text, and `0.0.1` runs commands directly on your machine without an OS sandbox. Aldwin defends against this with layered guardrails in `aldwin.core` and `aldwin.host`:
+Web pages, documents, and files can contain prompt-injection text, and `0.0.2` runs on your machine without an OS container sandbox. Aldwin defends against this with a single deterministic policy engine in `aldwin.core.policy` and `aldwin.core.workspace`:
 
-1. **Every command asks `y/n` first:** `run_command` never executes without showing you the exact command string and waiting for `y`. Pressing `n`, `Enter`, or `Esc` declines the command and tells the agent you declined.
-2. **Dangerous and interactive commands refused up front:** `sudo`, `su`, `doas`, interactive editors/pagers (`vim`, `nano`, `less`, `top`, `ssh`), and bare REPLs are refused before an approval prompt is even shown.
-3. **Subprocess isolation:** commands run with `stdin` closed (`/dev/null`), a 60-second timeout, a 10,000-character output cap, and secret environment variables (`*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`) stripped.
-4. **Every persona change asks `y/n`:** `set_persona` requires explicit `y/n` approval before writing `~/.aldwin/persona.md`, and the agent can never write to `config.yaml`, `secrets.yaml`, `memory/profile.md`, `sessions/`, or `skills/`.
-5. **Untrusted web content & SSRF protection:** `web_fetch` allows only `http`/`https`, resolves DNS on every hop to block `localhost`, loopback (`127.0.0.0/8`, `::1`), RFC 1918 private networks, and cloud metadata IPs (`169.254.169.254`), caps downloads at 2 MB / 10 seconds, and wraps extracted text in `<untrusted source="...">` tags with system instructions to treat page content strictly as data, never instructions.
+1. **Three approval tiers (`Auto`, `Diff`, `Ask`) in `core/policy.REGISTRY`:**
+   - **Auto:** read-only tools inside the active workspace (`read_file`, `read_document`, `list_dir`, `glob`, `grep`), `web_search`, `web_fetch`, `recall`, new `remember` notes, `todo`, and `calculate`.
+   - **Diff:** file and state modifications (`edit_file`, `write_file`, `remember` with `replace`, `forget`, `create_skill`, `set_persona`) display a coloured unified diff (folded at 24 lines, `Ctrl+O` to expand) with **No** as the default. Inside-workspace file edits can be granted for that single file for the current session (`a`), except build files (`pyproject.toml`, `Makefile`, `Dockerfile`, `.github/workflows/*.yml`, etc.), which always ask.
+   - **Ask:** `run_command` and `download_file` always ask (`y/n`) and can never be session-granted. Reads outside the workspace ask once per folder per session; writes outside the workspace ask every time.
+2. **Hard floor (never overridable by any answer or grant):**
+   - **Blocked secret paths (`core/policy.BLOCKED`):** `~/.ssh/**`, `~/.aws/**`, `~/.gnupg/**`, `~/.kube/**`, `~/.azure/**`, `~/.config/gh/**`, `~/.config/gcloud/**`, `~/.docker/config.json`, `**/*.pem`, `**/*.key`, `**/*.p12`, `**/*.pfx`, `**/id_rsa*`, `**/id_ed25519*`, `**/id_ecdsa*`, `**/.netrc`, `**/.pgpass`, `**/.npmrc`, `**/.pypirc`, `**/.git-credentials`, `**/.env`, `**/.env.*` (except `.env.example`, `.env.sample`, `.env.template`), `**/.envrc`, and `~/.aldwin/**` (except read-only `~/.aldwin/tmp/**` for `read_file` to page through trimmed tool outputs).
+   - **Read-only `.git` floor:** writes to `.git/**` are always refused so hooks and git config cannot be modified by file tools.
+   - **Hardline shell refusals (`core/policy.HARDLINE`):** destructive commands (`rm -rf /` or `~` or system folders, `mkfs`, `dd` or redirects to block devices, fork bombs, `kill -9 -1`, `shutdown`/`reboot`/`halt`/`poweroff`/`init 0|6`/`systemctl poweroff`) and commands naming blocked secret paths are refused before asking.
+3. **Subprocess & output isolation:**
+   - `run_command` starts from an empty environment and copies only safe variables (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `TMPDIR`, `TZ`, `PWD`) plus non-secret names listed in `run_command.env_allow`. Any `*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, or `*_CREDENTIAL` variable is stripped.
+   - Every tool result (except `todo` and `calculate`) is wrapped in `<untrusted id="u-…" source="…">` tags with inner tags escaped.
+   - Declining three actions in a single turn trips a circuit breaker and stops the turn immediately.
+4. **Structured approval log (`~/.aldwin/logs/approvals.jsonl`):**
+   - Every policy decision (`auto`, `asked`, `blocked`) writes one JSON line (`ts`, `session`, `call_id`, `tool`, `target`, `digest`, `tier`, `decision`, `answer`, `source`, `reason`) with secret-shaped tokens redacted (`‹redacted›`). File contents, diffs, and tool outputs are never logged.
+5. **Accepted risks in `0.0.2`:**
+   - **Read, then send to the web:** because workspace reads and `web_fetch` are both `Auto`, a prompt-injected document could try to exfiltrate non-blocked workspace text via a fetched URL. Mitigations in `0.0.2`: secret files are blocked by the hard floor, all tool output is wrapped in `<untrusted>`, and every `web_fetch` URL is recorded in `~/.aldwin/logs/approvals.jsonl`.
+   - **Best-effort shell inspection:** shell strings cannot be fully parsed statically; the primary control on `run_command` is that every command requires human `y/n` approval and displays yellow risk labels (`⚠ pipes into a shell`, `network download`, `recursive delete`, etc.).
+   - **Hard links:** hard links inside the workspace pointing to non-blocked filenames outside the workspace are not detected.
 
 ---
 

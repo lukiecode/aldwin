@@ -9,13 +9,16 @@ import shlex
 import signal
 import time
 from asyncio.subprocess import Process
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from agentling import Tool
 
 from aldwin.core.tools import AskFn, ToolOutput
+
+if TYPE_CHECKING:
+    from aldwin.core.policy import ApprovalPreview
 
 COMMAND_TIMEOUT_SECONDS: Final[float] = 60.0
 MAX_COMMAND_CHARS: Final[int] = 2_000
@@ -257,11 +260,16 @@ def _unwrap_command_tokens(tokens: list[str]) -> tuple[str, list[str]] | None:
     return None
 
 
-def check_command_allowed(command: str) -> str | None:
-    """Validate `command` against length, sudo, and interactive rules (`FR-4`).
+def check_command_allowed(
+    command: str,
+    *,
+    apply_denylist: bool = True,
+) -> str | None:
+    """Validate `command` length, and optionally refuse sudo and interactive programs.
 
-    Returns `None` if the command is allowed to proceed to `ask()`, or a concise
-    human refusal reason if it must be rejected before asking.
+    Returns `None` if the command may run, or a concise refusal reason.
+    The policy wrapper passes `apply_denylist=False`. Sudo and editors are
+    labelled and approved by the engine instead of refused here.
     """
     if not isinstance(command, str) or "\x00" in command:
         return "command must be a valid string"
@@ -272,6 +280,9 @@ def check_command_allowed(command: str) -> str | None:
 
     if len(command) > MAX_COMMAND_CHARS:
         return f"command exceeds {MAX_COMMAND_CHARS:,} characters"
+
+    if not apply_denylist:
+        return None
 
     segments = _split_shell_segments(stripped)
     if not segments:
@@ -322,7 +333,7 @@ def is_secret_env_var(name: str) -> bool:
 
 
 def scrub_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Copy `env`, strip secret variables, and set non-TTY defaults (`FR-4`)."""
+    """Copy `env`, strip secret variables, and set non-TTY defaults."""
     source = env if env is not None else os.environ
     cleaned = {
         key: value for key, value in source.items() if not is_secret_env_var(key)
@@ -340,7 +351,7 @@ def truncate_command_output(
     head_chars: int = HEAD_OUTPUT_CHARS,
     tail_chars: int = TAIL_OUTPUT_CHARS,
 ) -> str:
-    """Cap output at `max_chars`, keeping `head_chars` and `tail_chars` (`FR-4(g)`)."""
+    """Cap output at `max_chars`, keeping `head_chars` and `tail_chars`."""
     if len(text) <= max_chars:
         return text
     kept = head_chars + tail_chars
@@ -392,7 +403,7 @@ async def _terminate_process_group(
 
 
 class RunCommandTool(Tool):
-    """Run a shell command in the launch folder after `y/n` user approval (`FR-4`)."""
+    """Run a shell command in the launch folder after `y/n` user approval."""
 
     name = "run_command"
     description = (
@@ -412,6 +423,13 @@ class RunCommandTool(Tool):
                     "Never use sudo or interactive editors/shells."
                 ),
             },
+            "cwd": {
+                "type": "string",
+                "description": (
+                    "Optional working directory for the command "
+                    "(defaults to the workspace root)."
+                ),
+            },
         },
         "required": ["command"],
         "additionalProperties": False,
@@ -421,17 +439,59 @@ class RunCommandTool(Tool):
         self,
         ask: AskFn,
         *,
-        cwd: Path | None = None,
+        cwd: Path | Callable[[], Path] | None = None,
         timeout: float = COMMAND_TIMEOUT_SECONDS,
         env: Mapping[str, str] | None = None,
+        env_allow: Sequence[str] = (),
+        wrapped_by_policy: bool = False,
     ) -> None:
         self._ask = ask
         self._cwd = cwd
         self._timeout = timeout
         self._env = env
+        self._env_allow = tuple(env_allow)
+        self._wrapped_by_policy = wrapped_by_policy
 
-    async def forward(self, command: str) -> ToolOutput:  # type: ignore[override]
-        refusal = check_command_allowed(command)
+    def _resolve_work_dir(self, cwd_arg: str | None = None) -> Path:
+        base = (
+            self._cwd()
+            if callable(self._cwd)
+            else (self._cwd if self._cwd is not None else Path.cwd())
+        ).resolve()
+        if not cwd_arg:
+            return base
+        candidate = Path(cwd_arg).expanduser()
+        if not candidate.is_absolute():
+            candidate = base / candidate
+        return candidate.resolve()
+
+    def prepare_approval(
+        self,
+        command: str,
+        cwd: str | None = None,
+    ) -> ApprovalPreview:
+        """Build the `ApprovalPreview` for `PolicyWrappedTool`."""
+        from aldwin.core.policy import ApprovalPreview
+
+        _ = cwd
+        short_cmd = " ".join(command.split())
+        if len(short_cmd) > 60:
+            short_cmd = f"{short_cmd[:59]}…"
+        return ApprovalPreview(
+            summary=f"Run command: {short_cmd}" if short_cmd else "Run this command?",
+            detail=command,
+            mtime_ns=None,
+        )
+
+    async def forward(  # type: ignore[override]
+        self,
+        command: str,
+        cwd: str | None = None,
+    ) -> ToolOutput:
+        refusal = check_command_allowed(
+            command,
+            apply_denylist=not self._wrapped_by_policy,
+        )
         if refusal is not None:
             return ToolOutput(
                 f"Command refused: {refusal}",
@@ -439,18 +499,28 @@ class RunCommandTool(Tool):
                 ok=False,
             )
 
-        approved = await self._ask("Run this command?", command)
-        if not approved:
-            return ToolOutput(
-                "user declined",
-                summary="declined",
-                ok=False,
-                duration_ms=0,
-            )
+        if not self._wrapped_by_policy:
+            approved = await self._ask("Run this command?", command)
+            if not approved:
+                return ToolOutput(
+                    "user declined",
+                    summary="declined",
+                    ok=False,
+                    duration_ms=0,
+                )
 
         exec_started = time.monotonic()
-        work_dir = (self._cwd if self._cwd is not None else Path.cwd()).resolve()
-        clean_env = scrub_env(self._env)
+        work_dir = self._resolve_work_dir(cwd)
+        if self._env is not None:
+            child_env = scrub_env(self._env)
+        else:
+            from aldwin.core.policy import clean_env
+
+            child_env = clean_env(
+                os.environ,
+                env_allow=self._env_allow,
+                cwd=work_dir,
+            )
 
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -459,7 +529,7 @@ class RunCommandTool(Tool):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 cwd=str(work_dir),
-                env=clean_env,
+                env=child_env,
                 start_new_session=True,
             )
         except OSError as exc:
@@ -491,10 +561,8 @@ class RunCommandTool(Tool):
         elapsed_ms = max(0, int((time.monotonic() - exec_started) * 1000))
         exit_code = proc.returncode if proc.returncode is not None else -1
         decoded = stdout_bytes.decode("utf-8", errors="replace").rstrip("\n")
-        truncated = truncate_command_output(decoded)
-        full_output = (
-            f"exit {exit_code}\n{truncated}" if truncated else f"exit {exit_code}"
-        )
+        shown = decoded if self._wrapped_by_policy else truncate_command_output(decoded)
+        full_output = f"exit {exit_code}\n{shown}" if shown else f"exit {exit_code}"
         return ToolOutput(
             full_output,
             summary=f"exit {exit_code}",
@@ -506,16 +574,20 @@ class RunCommandTool(Tool):
 def build_run_command_tool(
     ask: AskFn,
     *,
-    cwd: Path | None = None,
+    cwd: Path | Callable[[], Path] | None = None,
     timeout: float = COMMAND_TIMEOUT_SECONDS,
     env: Mapping[str, str] | None = None,
+    env_allow: Sequence[str] = (),
+    wrapped_by_policy: bool = False,
 ) -> RunCommandTool:
-    """Construct the `RunCommandTool` wired with the host's `ask` callback (`FR-4`)."""
+    """Construct the `RunCommandTool` wired with the host's `ask` callback."""
     return RunCommandTool(
         ask=ask,
         cwd=cwd,
         timeout=timeout,
         env=env,
+        env_allow=env_allow,
+        wrapped_by_policy=wrapped_by_policy,
     )
 
 
