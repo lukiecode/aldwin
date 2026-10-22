@@ -170,16 +170,21 @@ def row_summary(running: str, summary: str, *, ok: bool) -> str:
     """Rewrite a denial row for edit tools. Success summaries stay as written."""
     if ok or not running:
         return summary
-    if summary == "declined":
+    lower = summary.lower()
+    if summary == "declined" or "denied by the user" in lower:
         return f"{running} · declined"
-    if summary == "not run: no approver":
+    if summary == "not run: no approver" or "no one was available to approve" in lower:
         return f"{running} · not run: no one to approve"
-    if summary.startswith("blocked:") and (
-        "secret" in summary or "may contain secrets" in summary
+    if (summary.startswith("blocked:") and "secret" in lower) or (
+        "blocked because it may hold secrets" in lower
     ):
         return f"{running} · blocked: may contain secrets"
-    if summary.startswith("blocked:") and "inside .git" in summary:
-        return f"{running} · {summary}"
+    if (summary.startswith("blocked:") and "inside .git" in summary) or (
+        "is inside .git and cannot be modified" in lower
+    ):
+        if summary.startswith("blocked:"):
+            return f"{running} · {summary}"
+        return f"{running} · blocked: inside .git"
     return summary
 
 
@@ -397,11 +402,7 @@ class EditFileTool(Tool):
         new: str,
     ) -> ToolOutput:
         started = time.monotonic()
-        try:
-            state = self._prepare(path, old, new)
-        except ToolCallError as exc:
-            message = str(exc)
-            return ToolOutput(message, summary=message, ok=False)
+        state = self._prepare(path, old, new)
 
         try:
             atomic_write_workspace(
@@ -410,8 +411,7 @@ class EditFileTool(Tool):
                 preserve_from=state.resolved,
             )
         except OSError as exc:
-            message = f"failed to write {state.display}: {exc}"
-            return ToolOutput(message, summary=message, ok=False)
+            raise ToolCallError(f"failed to write {state.display}: {exc}") from exc
 
         self._session.mark_read(state.resolved)
         elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
@@ -538,11 +538,7 @@ class WriteFileTool(Tool):
         content: str,
     ) -> ToolOutput:
         started = time.monotonic()
-        try:
-            state = self._prepare(path, content)
-        except ToolCallError as exc:
-            message = str(exc)
-            return ToolOutput(message, summary=message, ok=False)
+        state = self._prepare(path, content)
 
         try:
             state.resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -552,8 +548,7 @@ class WriteFileTool(Tool):
                 preserve_from=None if state.is_new else state.resolved,
             )
         except OSError as exc:
-            message = f"failed to write {state.display}: {exc}"
-            return ToolOutput(message, summary=message, ok=False)
+            raise ToolCallError(f"failed to write {state.display}: {exc}") from exc
 
         self._session.mark_read(state.resolved)
         elapsed_ms = max(0, int((time.monotonic() - started) * 1000))

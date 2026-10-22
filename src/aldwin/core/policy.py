@@ -1688,12 +1688,9 @@ class PolicyWrappedTool(Tool):
                 pre = await self.evaluate_for_step(call_id, arguments)
 
             if pre.denied_text is not None:
-                return ToolOutput(
-                    pre.denied_text,
-                    summary=pre.denied_summary or "declined",
-                    ok=False,
-                    duration_ms=0,
-                )
+                # Raise so Agentling sets is_error=True; returning ToolOutput(ok=False)
+                # looks like a normal tool result and models invent "edit succeeded".
+                raise ToolCallError(pre.denied_text)
 
             resolved_args, target_str, primary_path = self._resolve_args_and_target(
                 arguments
@@ -1710,16 +1707,10 @@ class PolicyWrappedTool(Tool):
                 is_edit=is_edit,
             )
             if not recheck_ok and recheck_out is not None:
-                return recheck_out
+                raise ToolCallError(str(recheck_out))
 
-        except ToolCallError as exc:
-            message = str(exc)
-            return ToolOutput(
-                message,
-                summary=_tool_call_error_summary(message),
-                ok=False,
-                duration_ms=0,
-            )
+        except ToolCallError:
+            raise
         except Exception as exc:
             logger.exception(
                 "Policy pipeline error in tool %r", self.name, exc_info=exc
@@ -1744,12 +1735,8 @@ class PolicyWrappedTool(Tool):
                 base_text=denial_msg,
                 base_summary=row_summary,
             )
-            return ToolOutput(
-                final_msg,
-                summary=row_summary,
-                ok=False,
-                duration_ms=0,
-            )
+            del row_summary
+            raise ToolCallError(final_msg) from exc
 
         exec_started = time.monotonic()
         if self._exec_timeout is not None and self._exec_timeout != float("inf"):
@@ -1775,7 +1762,10 @@ class PolicyWrappedTool(Tool):
             ok, summary = summarize_tool_result(self.name, raw_text, is_error=False)
             duration_ms = elapsed_ms
 
-        should_wrap = ok and (self.name not in UNTRUSTED_EXEMPT_TOOLS)
+        if not ok:
+            raise ToolCallError(raw_text)
+
+        should_wrap = self.name not in UNTRUSTED_EXEMPT_TOOLS
         processed_text, updated_summary = trim_tool_output(
             raw_text,
             max_chars=self._raw_max_output_chars,
@@ -1789,7 +1779,7 @@ class PolicyWrappedTool(Tool):
         return ToolOutput(
             processed_text,
             summary=updated_summary,
-            ok=ok,
+            ok=True,
             duration_ms=duration_ms,
         )
 

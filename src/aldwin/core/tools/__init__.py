@@ -187,6 +187,8 @@ def summarize_tool_result(
         # Never surface the untrusted wrapper as the CLI row summary.
         if stripped.startswith("<untrusted ") or stripped.startswith("</untrusted"):
             continue
+        if stripped.startswith("ToolCallError: "):
+            stripped = stripped.removeprefix("ToolCallError: ")
         return (not is_error), _shorten_summary(stripped)
     return (not is_error), ""
 

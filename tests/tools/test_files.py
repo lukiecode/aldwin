@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from agentling.tools import ToolCallError
 
 from aldwin.core.agent import (
     SessionContext,
@@ -42,6 +43,13 @@ from aldwin.core.tools.files import (
     build_file_tools as build_raw_file_tools,
 )
 from aldwin.core.workspace import Workspace, format_outside_display
+
+
+async def _call_fail(tool, args: dict) -> str:
+    """Run a wrapped tool that must soft-fail; Agentling sees this as is_error."""
+    with pytest.raises(ToolCallError) as caught:
+        await tool.call(args)
+    return str(caught.value)
 
 
 def _inner(text: str) -> str:
@@ -126,11 +134,13 @@ async def test_tc03_outside_read_declined(files: SimpleNamespace) -> None:
     outside = files.tmp / "outside.txt"
     outside.write_text("secret-body\n", encoding="utf-8")
     files.answer["answer"] = ApprovalAnswer("no", "user")
-    result = await files.tools["read_file"].call({"path": "../outside.txt"})
+    result = await _call_fail(
+        files.tools["read_file"],
+        {"path": "../outside.txt"},
+    )
     parent = files.workspace.resolve_safe("../outside.txt").path.parent
-    assert result.ok is False
-    assert str(result) == DENIAL_TEXT["user"]
-    assert "secret-body" not in str(result)
+    assert result == DENIAL_TEXT["user"]
+    assert "secret-body" not in result
     assert len(files.asks) == 1
     request = files.asks[0]
     assert request.summary == (
@@ -146,11 +156,13 @@ async def test_tc04_symlink_to_blocked_key(files: SimpleNamespace) -> None:
     target = files.root / "id_rsa"
     target.write_text("PRIVATE KEY LINE\n", encoding="utf-8")
     (files.root / "link").symlink_to(target)
-    result = await files.tools["read_file"].call({"path": "link"})
+    result = await _call_fail(
+        files.tools["read_file"],
+        {"path": "link"},
+    )
     shown = format_outside_display(target.resolve())
-    assert result.ok is False
-    assert str(result) == DENIAL_TEXT["blocked_path"].format(path=shown)
-    assert "PRIVATE KEY LINE" not in str(result)
+    assert result == DENIAL_TEXT["blocked_path"].format(path=shown)
+    assert "PRIVATE KEY LINE" not in result
     assert files.asks == []
 
 
@@ -159,28 +171,35 @@ async def test_tc05_env_template_and_env_local(files: SimpleNamespace) -> None:
     _write(files.root / ".env.example", "VISIBLE\n")
     _write(files.root / ".env.local", "SECRET\n")
     example = await files.tools["read_file"].call({"path": ".env.example"})
-    local = await files.tools["read_file"].call({"path": ".env.local"})
+    local = await _call_fail(
+        files.tools["read_file"],
+        {"path": ".env.local"},
+    )
     assert _inner(str(example)) == "1\tVISIBLE"
     assert example.summary == "Read .env.example · lines 1–1 of 1"
-    assert str(local) == DENIAL_TEXT["blocked_path"].format(path=".env.local")
-    assert "SECRET" not in str(local)
+    assert local == DENIAL_TEXT["blocked_path"].format(path=".env.local")
+    assert "SECRET" not in local
 
 
 async def test_tc06_read_file_binary(files: SimpleNamespace) -> None:
     """A NUL in the first 8 KB is a binary refusal and is not marked read."""
     (files.root / "logo.png").write_bytes(b"\x89PNG\x00rest")
-    result = await files.tools["read_file"].call({"path": "logo.png"})
-    assert result.ok is False
-    assert str(result) == "binary file; use read_document for PDFs and Office files"
+    result = await _call_fail(
+        files.tools["read_file"],
+        {"path": "logo.png"},
+    )
+    assert result == "binary file; use read_document for PDFs and Office files"
     assert files.session.read_files == {}
 
 
 async def test_tc07_read_file_suggestion(files: SimpleNamespace) -> None:
     """A missing file suggests the closest sibling within two edits."""
     _write(files.root / "notes" / "plan.md", "hi\n")
-    result = await files.tools["read_file"].call({"path": "notes/plans.md"})
-    assert result.ok is False
-    assert str(result) == "not found: notes/plans.md (did you mean notes/plan.md?)"
+    result = await _call_fail(
+        files.tools["read_file"],
+        {"path": "notes/plans.md"},
+    )
+    assert result == "not found: notes/plans.md (did you mean notes/plan.md?)"
 
 
 async def test_tc08_list_dir_clamp_skip_and_cap(files: SimpleNamespace) -> None:
@@ -259,9 +278,11 @@ async def test_tc11_grep_invalid_regex(
         re.compile("(")
     except re.error as exc:
         expected = f"invalid regex: {exc}"
-    result = await files.tools["grep"].call({"pattern": "("})
-    assert result.ok is False
-    assert str(result) == expected
+    result = await _call_fail(
+        files.tools["grep"],
+        {"pattern": "("},
+    )
+    assert result == expected
     assert files.asks == []
 
 
@@ -323,15 +344,14 @@ async def test_tc16_pattern_escape_denied(files: SimpleNamespace) -> None:
     ):
         files.session.reset_turn()
         name, payload = arguments
-        results.append(await files.tools[name].call(payload))
+        results.append(await _call_fail(files.tools[name], payload))
     for result in results:
-        assert result.ok is False
-        assert str(result) == (
+        assert result == (
             "Not run: the search pattern must stay inside its folder. "
             "This can't be approved."
         )
-        assert "secret.md" not in str(result)
-        assert "VISIBLE" not in str(result)
+        assert "secret.md" not in result
+        assert "VISIBLE" not in result
 
 
 async def test_tc17_grep_does_not_follow_dir_symlink(files: SimpleNamespace) -> None:
@@ -373,10 +393,12 @@ async def test_tc18_grep_hides_pem_and_key(files: SimpleNamespace) -> None:
 async def test_tc19_read_file_env_case(files: SimpleNamespace) -> None:
     """On macOS, `.ENV` is the same blocked name as `.env`."""
     _write(files.root / ".ENV", "SECRET\n")
-    result = await files.tools["read_file"].call({"path": ".ENV"})
-    assert result.ok is False
-    assert str(result) == DENIAL_TEXT["blocked_path"].format(path=".ENV")
-    assert "SECRET" not in str(result)
+    result = await _call_fail(
+        files.tools["read_file"],
+        {"path": ".ENV"},
+    )
+    assert result == DENIAL_TEXT["blocked_path"].format(path=".ENV")
+    assert "SECRET" not in result
 
 
 async def test_tc20_untrusted_wrapper_and_log(files: SimpleNamespace) -> None:
@@ -479,9 +501,12 @@ async def test_tc27_read_file_nul_window(files: SimpleNamespace) -> None:
     """A NUL at byte 8191 is binary. A NUL at byte 8192 is text."""
     (files.root / "a.bin").write_bytes(b"a" * 8191 + b"\x00")
     (files.root / "b.bin").write_bytes(b"a" * 8192 + b"\x00")
-    binary = await files.tools["read_file"].call({"path": "a.bin"})
+    binary = await _call_fail(
+        files.tools["read_file"],
+        {"path": "a.bin"},
+    )
     text = await files.tools["read_file"].call({"path": "b.bin"})
-    assert str(binary) == "binary file; use read_document for PDFs and Office files"
+    assert binary == "binary file; use read_document for PDFs and Office files"
     assert text.ok is True
     assert (
         _inner(str(text)) != "binary file; use read_document for PDFs and Office files"
@@ -494,41 +519,52 @@ async def test_tc28_read_file_size_cap(files: SimpleNamespace) -> None:
     (files.root / "fit.bin").write_bytes(chunk)
     (files.root / "over.bin").write_bytes(chunk + b"x")
     fit = await files.tools["read_file"].call({"path": "fit.bin"})
-    over = await files.tools["read_file"].call({"path": "over.bin"})
+    over = await _call_fail(
+        files.tools["read_file"],
+        {"path": "over.bin"},
+    )
     assert fit.ok is True
-    assert over.ok is False
-    assert str(over) == (
+    assert over == (
         "too large: 5.0 MB (limit 5 MB); use grep to find the part you need"
     )
-    assert "1\t" not in str(over)
+    assert "1\t" not in over
 
 
 async def test_tc29_read_file_offset_and_directory(files: SimpleNamespace) -> None:
     """Offset, a directory, and a missing parent each get their own refusal."""
     _write(files.root / "a.txt", "foo\nbar\nbaz\n")
     (files.root / "src").mkdir()
-    past = await files.tools["read_file"].call({"path": "a.txt", "offset": 4})
+    past = await _call_fail(
+        files.tools["read_file"],
+        {"path": "a.txt", "offset": 4},
+    )
     zero = await files.tools["read_file"].call({"path": "a.txt", "offset": 0})
     one = await files.tools["read_file"].call({"path": "a.txt", "offset": 1})
-    directory = await files.tools["read_file"].call({"path": "src"})
-    missing = await files.tools["read_file"].call({"path": "missing/a.txt"})
-    assert str(past) == "offset 4 is past the end (3 lines)"
-    assert past.ok is False
+    directory = await _call_fail(
+        files.tools["read_file"],
+        {"path": "src"},
+    )
+    missing = await _call_fail(
+        files.tools["read_file"],
+        {"path": "missing/a.txt"},
+    )
+    assert past == "offset 4 is past the end (3 lines)"
     assert _inner(str(zero)) == _inner(str(one))
     assert zero.ok is True
-    assert str(directory) == "is a directory: src; use list_dir"
-    assert directory.ok is False
-    assert str(missing) == "not found: missing/a.txt"
-    assert "did you mean" not in str(missing)
-    assert missing.ok is False
+    assert directory == "is a directory: src; use list_dir"
+    assert missing == "not found: missing/a.txt"
+    assert "did you mean" not in missing
 
 
 async def test_tc30_read_file_suggestion_tie(files: SimpleNamespace) -> None:
     """An equal edit distance picks the alphabetically first sibling."""
     _write(files.root / "notes" / "ab.md", "a\n")
     _write(files.root / "notes" / "ba.md", "b\n")
-    result = await files.tools["read_file"].call({"path": "notes/aa.md"})
-    assert str(result) == "not found: notes/aa.md (did you mean notes/ab.md?)"
+    result = await _call_fail(
+        files.tools["read_file"],
+        {"path": "notes/aa.md"},
+    )
+    assert result == "not found: notes/aa.md (did you mean notes/ab.md?)"
 
 
 async def test_tc31_mark_read_partial_then_refresh(files: SimpleNamespace) -> None:
@@ -588,10 +624,16 @@ async def test_tc32_list_dir_shape(files: SimpleNamespace) -> None:
     shallow_body = _inner(str(shallow))
     assert shallow_body.splitlines()[0] == "depth clamped to 1"
     assert "a/b/c.txt" not in shallow_body
-    missing = await files.tools["list_dir"].call({"path": "nope"})
-    assert str(missing) == "not found: nope"
-    not_dir = await files.tools["list_dir"].call({"path": "a.txt"})
-    assert str(not_dir) == "not a directory: a.txt; use read_file"
+    missing = await _call_fail(
+        files.tools["list_dir"],
+        {"path": "nope"},
+    )
+    assert missing == "not found: nope"
+    not_dir = await _call_fail(
+        files.tools["list_dir"],
+        {"path": "a.txt"},
+    )
+    assert not_dir == "not a directory: a.txt; use read_file"
 
 
 async def test_tc33_list_dir_unreadable(files: SimpleNamespace) -> None:
@@ -668,7 +710,10 @@ async def test_tc35_grep_options_and_fallback(
     py_only = await files.tools["grep"].call({"pattern": "TODO", "glob": "*.py"})
     needle = await files.tools["grep"].call({"pattern": "NEEDLE"})
     many = await files.tools["grep"].call({"pattern": "HIT"})
-    empty = await files.tools["grep"].call({"pattern": ""})
+    empty = await _call_fail(
+        files.tools["grep"],
+        {"pattern": ""},
+    )
     none = await files.tools["grep"].call({"pattern": "zzz"})
     _write(files.root / "stop_a.py", "nope\nstop here\n")
     _write(files.root / "stop_b.md", "stop\n")
@@ -691,8 +736,7 @@ async def test_tc35_grep_options_and_fallback(
         len([line for line in many_lines if ":HIT" in line or ": HIT" in line]) == 200
     )
     assert many_lines[-1] == "… 1 more matches in 1 files"
-    assert str(empty) == "invalid regex: pattern is empty"
-    assert empty.ok is False
+    assert empty == "invalid regex: pattern is empty"
     assert _inner(str(none)) == "no matches"
     assert none.summary == 'Search "zzz" · 0 matches in 0 files'
     assert none.ok is True
@@ -748,18 +792,26 @@ async def test_tc37_timeouts(
     monkeypatch.setattr(GlobTool, "_walk", _slow)
     monkeypatch.setattr(GrepTool, "_walk", _slow)
     _write(files.root / "a.txt", "hi\n")
-    read = await files.tools["read_file"].call({"path": "a.txt"})
-    listing = await files.tools["list_dir"].call({"path": "."})
-    found = await files.tools["glob"].call({"pattern": "*.txt"})
-    searched = await files.tools["grep"].call({"pattern": "hi"})
-    assert read.ok is False
-    assert listing.ok is False
-    assert found.ok is False
-    assert searched.ok is False
-    assert str(read) == "timed out after 10s"
-    assert str(listing) == "timed out after 10s"
-    assert str(found) == "timed out after 15s"
-    assert str(searched) == "timed out after 30s"
+    read = await _call_fail(
+        files.tools["read_file"],
+        {"path": "a.txt"},
+    )
+    listing = await _call_fail(
+        files.tools["list_dir"],
+        {"path": "."},
+    )
+    found = await _call_fail(
+        files.tools["glob"],
+        {"pattern": "*.txt"},
+    )
+    searched = await _call_fail(
+        files.tools["grep"],
+        {"pattern": "hi"},
+    )
+    assert read == "timed out after 10s"
+    assert listing == "timed out after 10s"
+    assert found == "timed out after 15s"
+    assert searched == "timed out after 30s"
 
 
 async def test_tc38_cancel_python_walk(
@@ -811,19 +863,20 @@ async def test_tc41_aldwin_tmp_read_only(files: SimpleNamespace) -> None:
     tmp_file.parent.mkdir(parents=True, exist_ok=True)
     tmp_file.write_text("paged\n", encoding="utf-8")
     read = await files.tools["read_file"].call({"path": str(tmp_file)})
-    listing = await files.tools["list_dir"].call({"path": str(files.home)})
-    searched = await files.tools["grep"].call(
-        {"pattern": "paged", "path": str(files.home)}
+    listing = await _call_fail(
+        files.tools["list_dir"],
+        {"path": str(files.home)},
+    )
+    searched = await _call_fail(
+        files.tools["grep"], {"pattern": "paged", "path": str(files.home)}
     )
     assert read.ok is True
     assert _inner(str(read)) == "1\tpaged"
     assert files.asks == []
-    assert listing.ok is False
-    assert searched.ok is False
-    assert "may hold secrets" in str(listing)
-    assert "may hold secrets" in str(searched)
-    assert "paged" not in str(listing)
-    assert "paged" not in str(searched)
+    assert "may hold secrets" in listing
+    assert "may hold secrets" in searched
+    assert "paged" not in listing
+    assert "paged" not in searched
 
 
 def test_tc47_registration_and_catalog(
@@ -907,10 +960,12 @@ async def test_read_file_refuses_symlink_retargeted_at_private_key(
         return original(path, **kwargs)
 
     monkeypatch.setattr(files.workspace, "resolve_safe", resolve)
-    result = await files.tools["read_file"].call({"path": "link"})
-    assert result.ok is False
-    assert "PRIVATE KEY LINE" not in str(result)
-    assert "blocked" in str(result)
+    result = await _call_fail(
+        files.tools["read_file"],
+        {"path": "link"},
+    )
+    assert "PRIVATE KEY LINE" not in result
+    assert "blocked" in result
 
 
 async def test_grep_refuses_symlink_retargeted_at_private_key(
@@ -935,10 +990,12 @@ async def test_grep_refuses_symlink_retargeted_at_private_key(
         return original(path, **kwargs)
 
     monkeypatch.setattr(files.workspace, "resolve_safe", resolve)
-    result = await files.tools["grep"].call({"pattern": "PRIVATE", "path": "link"})
-    assert result.ok is False
-    assert "PRIVATE KEY LINE" not in str(result)
-    assert "blocked" in str(result)
+    result = await _call_fail(
+        files.tools["grep"],
+        {"pattern": "PRIVATE", "path": "link"},
+    )
+    assert "PRIVATE KEY LINE" not in result
+    assert "blocked" in result
 
 
 async def test_list_and_glob_count_gitignored_secrets(files: SimpleNamespace) -> None:

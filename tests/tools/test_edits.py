@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from agentling.tools import ToolCallError
 
 from aldwin.core.approval_log import ApprovalLogger
 from aldwin.core.policy import (
@@ -97,6 +98,13 @@ def _write(path: Path, text: str, *, newline: str | None = None) -> None:
     path.write_text(text, encoding="utf-8", newline="")
 
 
+async def _call_fail(tool: Any, args: dict[str, Any]) -> str:
+    """Run a wrapped tool that must soft-fail; Agentling sees this as is_error."""
+    with pytest.raises(ToolCallError) as caught:
+        await tool.call(args)
+    return str(caught.value)
+
+
 async def _mark_read(edits: SimpleNamespace, rel: str) -> None:
     result = await edits.tools["read_file"].call({"path": rel})
     assert result.ok is True, result
@@ -143,11 +151,11 @@ def test_atomic_write_cleans_temp_on_failure(
 async def test_edit_without_prior_read(edits: SimpleNamespace) -> None:
     path = edits.root / "notes" / "plan.md"
     _write(path, "draft\n")
-    out = await edits.tools["edit_file"].call(
-        {"path": "notes/plan.md", "old": "draft", "new": "final"}
+    msg = await _call_fail(
+        edits.tools["edit_file"],
+        {"path": "notes/plan.md", "old": "draft", "new": "final"},
     )
-    assert out.ok is False
-    assert str(out) == "read the file first: notes/plan.md"
+    assert msg == "read the file first: notes/plan.md"
     assert edits.asks == []
     assert path.read_text(encoding="utf-8") == "draft\n"
 
@@ -188,11 +196,10 @@ async def test_edit_old_matches_three_times(edits: SimpleNamespace) -> None:
     path = edits.root / "a.md"
     _write(path, "x\nfoo\ny\nfoo\nz\nfoo\n")
     await _mark_read(edits, "a.md")
-    out = await edits.tools["edit_file"].call(
-        {"path": "a.md", "old": "foo", "new": "bar"}
+    msg = await _call_fail(
+        edits.tools["edit_file"], {"path": "a.md", "old": "foo", "new": "bar"}
     )
-    assert out.ok is False
-    assert "matches 3 times (lines 2, 4, 6); add more context" in str(out)
+    assert "matches 3 times (lines 2, 4, 6); add more context" in msg
     assert edits.asks == []
     assert path.read_text(encoding="utf-8") == "x\nfoo\ny\nfoo\nz\nfoo\n"
 
@@ -200,12 +207,11 @@ async def test_edit_old_matches_three_times(edits: SimpleNamespace) -> None:
 async def test_edit_old_matches_zero(edits: SimpleNamespace) -> None:
     _write(edits.root / "a.md", "alpha\nbeta\ngamma\n")
     await _mark_read(edits, "a.md")
-    out = await edits.tools["edit_file"].call(
-        {"path": "a.md", "old": "bete", "new": "beta"}
+    msg = await _call_fail(
+        edits.tools["edit_file"], {"path": "a.md", "old": "bete", "new": "beta"}
     )
-    assert out.ok is False
-    assert str(out).startswith("no match for old; closest lines:")
-    assert "2: beta" in str(out)
+    assert msg.startswith("no match for old; closest lines:")
+    assert "2: beta" in msg
     assert edits.asks == []
 
 
@@ -214,11 +220,10 @@ async def test_edit_refuses_stale_mtime(edits: SimpleNamespace) -> None:
     _write(path, "hello\n")
     await _mark_read(edits, "a.md")
     path.write_text("hello\nchanged\n", encoding="utf-8")
-    out = await edits.tools["edit_file"].call(
-        {"path": "a.md", "old": "hello", "new": "hi"}
+    msg = await _call_fail(
+        edits.tools["edit_file"], {"path": "a.md", "old": "hello", "new": "hi"}
     )
-    assert out.ok is False
-    assert str(out) == "file changed since last read; read it again"
+    assert msg == "file changed since last read; read it again"
     assert edits.asks == []
 
 
@@ -229,11 +234,10 @@ async def test_edit_decline_includes_user_reason(edits: SimpleNamespace) -> None
     edits.answer["answer"] = ApprovalAnswer(
         "no", "user", reason="keep the British spelling"
     )
-    out = await edits.tools["edit_file"].call(
-        {"path": "a.md", "old": "colour", "new": "color"}
+    msg = await _call_fail(
+        edits.tools["edit_file"], {"path": "a.md", "old": "colour", "new": "color"}
     )
-    assert out.ok is False
-    text = str(out)
+    text = msg
     assert DENIAL_TEXT["user_edit"] in text
     assert "User's reason: keep the British spelling" in text
     assert "The file was not changed." in text
@@ -261,9 +265,11 @@ async def test_write_creates_missing_parents(edits: SimpleNamespace) -> None:
 
 async def test_write_rejects_oversized_content(edits: SimpleNamespace) -> None:
     content = "x" * (1_048_576 + 1)
-    out = await edits.tools["write_file"].call({"path": "big.md", "content": content})
-    assert out.ok is False
-    assert str(out) == "content too large (limit 1 MB)"
+    msg = await _call_fail(
+        edits.tools["write_file"],
+        {"path": "big.md", "content": content},
+    )
+    assert msg == "content too large (limit 1 MB)"
     assert edits.asks == []
     assert not (edits.root / "big.md").exists()
 
@@ -289,12 +295,11 @@ async def test_outside_workspace_edit_never_grantable(edits: SimpleNamespace) ->
 
 async def test_edit_blocked_env_file(edits: SimpleNamespace) -> None:
     _write(edits.root / ".env", "SECRET=1\n")
-    out = await edits.tools["edit_file"].call(
-        {"path": ".env", "old": "SECRET=1", "new": "SECRET=2"}
+    msg = await _call_fail(
+        edits.tools["edit_file"], {"path": ".env", "old": "SECRET=1", "new": "SECRET=2"}
     )
-    assert out.ok is False
     assert edits.asks == []
-    assert "blocked" in str(out).lower() or "secrets" in str(out).lower()
+    assert "blocked" in msg.lower() or "secrets" in msg.lower()
     assert (edits.root / ".env").read_text(encoding="utf-8") == "SECRET=1\n"
 
 
@@ -320,11 +325,10 @@ async def test_atomic_replace_failure_leaves_original(
         raise OSError("disk full")
 
     monkeypatch.setattr(os, "replace", boom)
-    out = await edits.tools["edit_file"].call(
-        {"path": "a.md", "old": "keep", "new": "gone"}
+    msg = await _call_fail(
+        edits.tools["edit_file"], {"path": "a.md", "old": "keep", "new": "gone"}
     )
-    assert out.ok is False
-    assert "failed to write a.md: disk full" in str(out)
+    assert "failed to write a.md: disk full" in msg
     assert path.read_text(encoding="utf-8") == "keep\n"
     assert list(edits.root.glob(".a.md.aldwin-tmp")) == []
 
@@ -372,12 +376,12 @@ async def test_build_file_edit_never_grantable(edits: SimpleNamespace) -> None:
 
 
 async def test_git_path_write_blocked(edits: SimpleNamespace) -> None:
-    out = await edits.tools["write_file"].call(
-        {"path": ".git/hooks/pre-commit", "content": "#!/bin/sh\n"}
+    msg = await _call_fail(
+        edits.tools["write_file"],
+        {"path": ".git/hooks/pre-commit", "content": "#!/bin/sh\n"},
     )
-    assert out.ok is False
     assert edits.asks == []
-    assert "inside .git" in str(out)
+    assert "inside .git" in msg
     assert not (edits.root / ".git" / "hooks" / "pre-commit").exists()
 
 
@@ -407,10 +411,12 @@ async def test_mtime_change_after_yes_fails_closed(edits: SimpleNamespace) -> No
         approval_log=edits.log,
     )
     tools = {tool.name: tool for tool in wrapped}
-    out = await tools["edit_file"].call({"path": "a.md", "old": "v1", "new": "v2"})
+    msg = await _call_fail(
+        tools["edit_file"],
+        {"path": "a.md", "old": "v1", "new": "v2"},
+    )
     assert len(asks) == 1
-    assert out.ok is False
-    assert str(out) == "file changed since last read; read it again"
+    assert msg == "file changed since last read; read it again"
     assert path.read_text(encoding="utf-8") == "v1-changed\n"
 
 
@@ -436,10 +442,10 @@ async def test_symlink_into_ssh_write_blocked(edits: SimpleNamespace) -> None:
     (ssh / "id_rsa").write_text("key", encoding="utf-8")
     link = edits.root / "keys"
     link.symlink_to(ssh)
-    out = await edits.tools["write_file"].call(
-        {"path": "keys/stolen.txt", "content": "x\n"}
+    await _call_fail(
+        edits.tools["write_file"],
+        {"path": "keys/stolen.txt", "content": "x\n"},
     )
-    assert out.ok is False
     assert edits.asks == []
     assert not (ssh / "stolen.txt").exists()
 
@@ -482,10 +488,16 @@ async def test_written_file_keeps_ansi_and_bidi(edits: SimpleNamespace) -> None:
 async def test_edit_rejects_empty_or_identical_old_new(edits: SimpleNamespace) -> None:
     _write(edits.root / "a.md", "x\n")
     await _mark_read(edits, "a.md")
-    empty = await edits.tools["edit_file"].call({"path": "a.md", "old": "", "new": "y"})
-    assert str(empty) == "old is empty"
-    same = await edits.tools["edit_file"].call({"path": "a.md", "old": "x", "new": "x"})
-    assert str(same) == "old and new must differ"
+    empty = await _call_fail(
+        edits.tools["edit_file"],
+        {"path": "a.md", "old": "", "new": "y"},
+    )
+    assert empty == "old is empty"
+    same = await _call_fail(
+        edits.tools["edit_file"],
+        {"path": "a.md", "old": "x", "new": "x"},
+    )
+    assert same == "old and new must differ"
     assert edits.asks == []
 
 
@@ -494,11 +506,10 @@ async def test_edit_rejects_non_utf8(edits: SimpleNamespace) -> None:
     path.write_bytes(b"caf\xe9\n")
     # mark_read via session directly (read_file replaces undecodable bytes)
     edits.session.mark_read(path)
-    out = await edits.tools["edit_file"].call(
-        {"path": "bin.txt", "old": "caf", "new": "CAF"}
+    msg = await _call_fail(
+        edits.tools["edit_file"], {"path": "bin.txt", "old": "caf", "new": "CAF"}
     )
-    assert out.ok is False
-    assert str(out) == "unsupported encoding; edit with run_command instead"
+    assert msg == "unsupported encoding; edit with run_command instead"
     assert edits.asks == []
 
 
@@ -597,8 +608,10 @@ async def test_edit_tools_never_call_ask(edits: SimpleNamespace) -> None:
 
 async def test_aldwin_home_not_writable(edits: SimpleNamespace) -> None:
     target = edits.home / "secrets.yaml"
-    out = await edits.tools["write_file"].call({"path": str(target), "content": "x\n"})
-    assert out.ok is False
+    await _call_fail(
+        edits.tools["write_file"],
+        {"path": str(target), "content": "x\n"},
+    )
     assert edits.asks == []
 
 
@@ -606,10 +619,10 @@ async def test_parents_not_created_before_approval(
     edits: SimpleNamespace,
 ) -> None:
     edits.answer["answer"] = ApprovalAnswer("no", "user")
-    out = await edits.tools["write_file"].call(
-        {"path": "newdir/x.md", "content": "hi\n"}
+    await _call_fail(
+        edits.tools["write_file"],
+        {"path": "newdir/x.md", "content": "hi\n"},
     )
-    assert out.ok is False
     assert not (edits.root / "newdir").exists()
 
 
@@ -617,11 +630,10 @@ async def test_multi_match_lists_at_most_ten_lines(edits: SimpleNamespace) -> No
     lines = "\n".join(["foo"] * 12) + "\n"
     _write(edits.root / "a.md", lines)
     await _mark_read(edits, "a.md")
-    out = await edits.tools["edit_file"].call(
-        {"path": "a.md", "old": "foo", "new": "bar"}
+    msg = await _call_fail(
+        edits.tools["edit_file"], {"path": "a.md", "old": "foo", "new": "bar"}
     )
-    assert out.ok is False
-    message = str(out)
+    message = msg
     assert "matches 12 times" in message
     listed = re.search(r"lines ([0-9, ]+)", message)
     assert listed is not None
