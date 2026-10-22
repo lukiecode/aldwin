@@ -1261,7 +1261,9 @@ async def test_wrapped_sudo_asks_then_runs(
     assert len(asked) == 1
     assert "runs as admin" in asked[0].risky
     assert "sudo is not allowed" not in str(out)
-    assert str(out).startswith("exit ")
+    # A successful run is wrapped in <untrusted>, so the exit line is not
+    # always the first character. CI runners can run sudo without a password.
+    assert "exit " in str(out)
 
 
 async def test_wrapped_command_saves_full_stdout(
