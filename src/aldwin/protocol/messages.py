@@ -1,4 +1,4 @@
-"""Pydantic v2 message models for the Aldwin door-to-host protocol."""
+"""Pydantic v2 message models for the Aldwin protocol (v2 with v1 negotiation)."""
 
 from __future__ import annotations
 
@@ -6,13 +6,28 @@ from functools import lru_cache
 from typing import Annotated, Any, Final, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Discriminator, Field, Tag, TypeAdapter
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    Tag,
+    TypeAdapter,
+    model_validator,
+)
 
-PROTOCOL_VERSION: Final[int] = 1
+PROTOCOL_VERSION: Final[int] = 2
+VERSION: Final[int] = PROTOCOL_VERSION
+MIN_SUPPORTED_VERSION: Final[int] = 1
+MAX_APPROVAL_REASON_CHARS: Final[int] = 280
 
-ApprovalAnswer = Literal["yes", "no"]
+ApprovalAnswer = Literal["yes", "yes_session", "no"]
+ApprovalTier = Literal["ask", "diff"]
+GrantScope = Literal["file", "folder"]
 HistoryRole = Literal["user", "assistant", "tool"]
 DoneReason = Literal["answered", "stopped", "max_steps", "ok"]
+TodoStatus = Literal["pending", "in_progress", "done", "dropped"]
+SkillSource = Literal["default", "user", "user override"]
 ErrorCode = Literal[
     "version_mismatch",
     "protocol",
@@ -50,6 +65,27 @@ class HistoryItem(BaseModel):
     at: str | None = None
 
 
+class TodoItem(BaseModel):
+    """One task item in a `todo.updated` event."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    text: str
+    status: TodoStatus = "pending"
+
+
+class SkillCatalogItem(BaseModel):
+    """One skill descriptor in a `skills` event."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    description: str
+    source: SkillSource = "default"
+    tools_removed: bool = False
+    error: str | None = None
+
+
 class RequestBase(BaseModel):
     """Envelope shared by all requests sent from a door to the host."""
 
@@ -65,15 +101,16 @@ class HelloRequest(RequestBase):
     """Initial version handshake sent before any other request."""
 
     type: Literal["hello"] = "hello"
-    v_min: int = Field(default=PROTOCOL_VERSION, ge=1)
+    v_min: int = Field(default=MIN_SUPPORTED_VERSION, ge=1)
     v_max: int = Field(default=PROTOCOL_VERSION, ge=1)
 
 
 class TurnRequest(RequestBase):
-    """Start a conversation turn with the given user text."""
+    """Start a turn with user text and optional `@`-picked skills."""
 
-    type: Literal["turn"] = "turn"
+    type: Literal["turn", "user.message"] = "turn"
     text: str
+    skills: list[str] = Field(default_factory=list)
 
 
 class StopRequest(RequestBase):
@@ -83,11 +120,22 @@ class StopRequest(RequestBase):
 
 
 class ApproveRequest(RequestBase):
-    """Answer a pending host approval prompt (`yes` or `no`)."""
+    """Answer a pending approval prompt (`yes`, `yes_session`, or `no`)."""
 
     type: Literal["approve"] = "approve"
     approval_id: str = Field(min_length=1)
     answer: ApprovalAnswer
+    digest: str | None = None
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def _normalise_reason(self) -> ApproveRequest:
+        if self.answer != "no" or self.reason is None:
+            self.reason = None
+        else:
+            cleaned = self.reason.strip()
+            self.reason = cleaned[:MAX_APPROVAL_REASON_CHARS] if cleaned else None
+        return self
 
 
 class HistoryRequest(RequestBase):
@@ -104,13 +152,27 @@ class SetModelRequest(RequestBase):
     name: str = Field(min_length=1)
 
 
+class SkillsListRequest(RequestBase):
+    """Request the active skill catalog from the host."""
+
+    type: Literal["skills.list"] = "skills.list"
+
+
+class TodoGetRequest(RequestBase):
+    """Request the current session todo list from the host."""
+
+    type: Literal["todo.get"] = "todo.get"
+
+
 Request = Annotated[
     HelloRequest
     | TurnRequest
     | StopRequest
     | ApproveRequest
     | HistoryRequest
-    | SetModelRequest,
+    | SetModelRequest
+    | SkillsListRequest
+    | TodoGetRequest,
     Field(discriminator="type"),
 ]
 
@@ -154,12 +216,57 @@ class ToolResultEvent(EventBase):
 
 
 class ApprovalEvent(EventBase):
-    """Host request asking the door for user y/n approval before an action."""
+    """Host request asking the door for user approval before an action."""
 
     kind: Literal["approval"] = "approval"
     approval_id: str = Field(min_length=1)
+    tool: str = ""
+    tier: ApprovalTier = "ask"
     summary: str
     detail: str = ""
+    grantable: bool = False
+    grant_scope: GrantScope | None = None
+    digest: str = ""
+    risky: list[str] = Field(default_factory=list)
+
+
+class TodoUpdatedEvent(EventBase):
+    """Live task checklist update emitted by the `todo` tool."""
+
+    kind: Literal["todo.updated"] = "todo.updated"
+    items: list[TodoItem] = Field(default_factory=list)
+    done: int = Field(default=0, ge=0)
+    total: int = Field(default=0, ge=0)
+
+
+class SkillsEvent(EventBase):
+    """Active skill catalog emitted by the host."""
+
+    kind: Literal["skills"] = "skills"
+    items: list[SkillCatalogItem] = Field(default_factory=list)
+
+
+class SkillsUsedEvent(EventBase):
+    """Resolved `@`-picked skills for the current turn."""
+
+    kind: Literal["skills.used"] = "skills.used"
+    names: list[str] = Field(default_factory=list)
+    dropped: list[str] = Field(default_factory=list)
+
+
+class SkillBodyEvent(EventBase):
+    """Effective `SKILL.md` body for `/skills show <name>`."""
+
+    kind: Literal["skill.body"] = "skill.body"
+    name: str
+    body: str
+
+
+class NoticeEvent(EventBase):
+    """Non-terminal informational notice (e.g. `skills reloaded`)."""
+
+    kind: Literal["notice"] = "notice"
+    message: str
 
 
 class HistoryEvent(EventBase):
@@ -198,6 +305,11 @@ Event = Annotated[
     | ToolCallEvent
     | ToolResultEvent
     | ApprovalEvent
+    | TodoUpdatedEvent
+    | SkillsEvent
+    | SkillsUsedEvent
+    | SkillBodyEvent
+    | NoticeEvent
     | HistoryEvent
     | StatusEvent
     | DoneEvent

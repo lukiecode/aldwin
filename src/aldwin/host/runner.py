@@ -7,8 +7,10 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import Any, Final, Literal
 from uuid import uuid4
 
 from agentling import (
@@ -28,15 +30,28 @@ from agentling.memory import FinalStep
 from agentling.models import Usage
 
 from aldwin.core.agent import (
+    AnyAskFn,
     build_agent,
     new_session,
     restore_session,
     switch_session_model,
 )
+from aldwin.core.approval_log import ApprovalLogger, LogTier
+from aldwin.core.home import home_dir
 from aldwin.core.models import RetryingModel, classify_model_error
+from aldwin.core.policy import (
+    ApprovalAnswer as PolicyApprovalAnswer,
+)
+from aldwin.core.policy import (
+    ApprovalRequest,
+    PolicySession,
+    PolicyWrappedTool,
+    compute_digest,
+)
 from aldwin.core.settings import load_config, load_secrets, update_config_model
 from aldwin.core.tools import RememberTool, summarize_tool_result
-from aldwin.host.in_process import InProcessTransport
+from aldwin.core.workspace import Workspace, format_outside_display
+from aldwin.host.in_process import InProcessTransport, WorkspaceSummary
 from aldwin.host.sessions import (
     MAX_PREVIEW_CHARS,
     SessionStore,
@@ -44,6 +59,7 @@ from aldwin.host.sessions import (
     shorten_one_line,
 )
 from aldwin.protocol import (
+    MIN_SUPPORTED_VERSION,
     PROTOCOL_VERSION,
     ApprovalAnswer,
     ApprovalEvent,
@@ -53,14 +69,20 @@ from aldwin.protocol import (
     ErrorCode,
     ErrorEvent,
     Event,
+    GrantScope,
     HelloRequest,
     HistoryEvent,
     HistoryRequest,
+    NoticeEvent,
     Request,
     SetModelRequest,
+    SkillsEvent,
+    SkillsListRequest,
     StatusEvent,
     StopRequest,
     TextEvent,
+    TodoGetRequest,
+    TodoUpdatedEvent,
     TokenUsage,
     ToolCallEvent,
     ToolResultEvent,
@@ -69,8 +91,12 @@ from aldwin.protocol import (
 
 logger = logging.getLogger("aldwin.host.runner")
 
+CIRCUIT_BREAKER_NOTICE: Final[str] = (
+    "Stopped after 3 declined actions. Tell Aldwin what you'd like instead."
+)
+
 AskFn = Callable[[str, str], Awaitable[bool]]
-AgentBuilder = Callable[[str, AskFn], Agent]
+AgentBuilder = Callable[..., Agent]
 EventSender = Callable[[Event], Awaitable[None]]
 
 
@@ -83,7 +109,7 @@ def format_args_preview(arguments: dict[str, Any]) -> str:
         line_count = len(raw_text.splitlines()) if raw_text else 0
         unit = "line" if line_count == 1 else "lines"
         return f"persona.md · {line_count} {unit}"
-    for raw_key in ("command", "url", "name"):
+    for raw_key in ("command", "url", "name", "path"):
         if raw_key in arguments and isinstance(arguments[raw_key], str):
             return shorten_one_line(arguments[raw_key], MAX_PREVIEW_CHARS)
     for quoted_key in ("query", "text"):
@@ -127,14 +153,21 @@ def classify_turn_error(exc: BaseException) -> tuple[ErrorCode, str]:
 class RequestScope:
     """Enforces that every request `id` receives exactly one terminal event."""
 
-    def __init__(self, req_id: str, send_event: EventSender) -> None:
+    def __init__(
+        self,
+        req_id: str,
+        send_event: EventSender,
+        *,
+        version: int = PROTOCOL_VERSION,
+    ) -> None:
         self.req_id = req_id
         self._send_event = send_event
+        self._version = version
         self._terminated = False
 
     @property
     def terminated(self) -> bool:
-        """Return `True` once `done()` or `error()` has been emitted."""
+        """Return `True` once `done` or `error` has been emitted."""
         return self._terminated
 
     async def emit(self, event: Event) -> None:
@@ -149,6 +182,7 @@ class RequestScope:
             raise ValueError(
                 f"Event `re` ({event.re!r}) must match request id ({self.req_id!r})."
             )
+        event.v = self._version
         await self._send_event(event)
 
     async def done(
@@ -162,7 +196,9 @@ class RequestScope:
                 f"Terminal event already emitted for request {self.req_id!r}."
             )
         self._terminated = True
-        await self._send_event(DoneEvent(re=self.req_id, reason=reason, usage=usage))
+        await self._send_event(
+            DoneEvent(v=self._version, re=self.req_id, reason=reason, usage=usage)
+        )
 
     async def error(self, code: ErrorCode, message: str) -> None:
         """Emit the single terminal `ErrorEvent` for this request."""
@@ -171,7 +207,9 @@ class RequestScope:
                 f"Terminal event already emitted for request {self.req_id!r}."
             )
         self._terminated = True
-        await self._send_event(ErrorEvent(re=self.req_id, code=code, message=message))
+        await self._send_event(
+            ErrorEvent(v=self._version, re=self.req_id, code=code, message=message)
+        )
 
     async def __aenter__(self) -> RequestScope:
         return self
@@ -199,12 +237,29 @@ class RequestScope:
         return False
 
 
-class ApprovalBroker:
-    """Tracks pending `asyncio.Future` objects for tool/persona approvals."""
+@dataclass(slots=True)
+class _PendingApproval:
+    """Tracked state for one outstanding approval prompt."""
 
-    def __init__(self, send_event: EventSender) -> None:
+    future: asyncio.Future[PolicyApprovalAnswer]
+    digest: str
+    tool: str
+    target: str
+    tier: LogTier
+
+
+class ApprovalBroker:
+    """Tracks pending `asyncio.Future` objects for tool approvals."""
+
+    def __init__(
+        self,
+        send_event: EventSender,
+        *,
+        approval_log: ApprovalLogger | None = None,
+    ) -> None:
         self._send_event = send_event
-        self._pending: dict[str, asyncio.Future[bool]] = {}
+        self._approval_log = approval_log
+        self._pending: dict[str, _PendingApproval] = {}
         self._lock = asyncio.Lock()
 
     @property
@@ -212,47 +267,180 @@ class ApprovalBroker:
         """Return `True` if at least one approval is waiting for an answer."""
         return bool(self._pending)
 
-    async def ask(self, re: str, summary: str, detail: str = "") -> bool:
-        """Emit `ApprovalEvent` one at a time and await the door's `yes`/`no` answer."""
+    async def ask_request(
+        self,
+        re: str,
+        request: ApprovalRequest,
+        *,
+        door_version: int = PROTOCOL_VERSION,
+        door_connected: bool = True,
+    ) -> PolicyApprovalAnswer:
+        """Emit `ApprovalEvent` and await `ApprovalAnswer`."""
+        if not door_connected or (door_version == 1 and request.tier == "diff"):
+            return PolicyApprovalAnswer(
+                answer="no",
+                source="no_approver",
+                reason=None,
+            )
+
         async with self._lock:
             approval_id = f"ap_{uuid4().hex[:12]}"
             loop = asyncio.get_running_loop()
-            future: asyncio.Future[bool] = loop.create_future()
-            self._pending[approval_id] = future
+            future: asyncio.Future[PolicyApprovalAnswer] = loop.create_future()
+
+            grant_scope: GrantScope | None = None
+            if request.grantable and request.grant_key:
+                if request.grant_key.startswith("file:"):
+                    grant_scope = "file"
+                elif request.grant_key.startswith("folder:"):
+                    grant_scope = "folder"
+
+            self._pending[approval_id] = _PendingApproval(
+                future=future,
+                digest=request.digest,
+                tool=request.tool,
+                target=request.detail or request.summary,
+                tier=request.tier,
+            )
             try:
-                await self._send_event(
-                    ApprovalEvent(
+                if door_version == 1:
+                    ev = ApprovalEvent(
+                        v=1,
                         re=re,
                         approval_id=approval_id,
-                        summary=summary,
-                        detail=detail,
+                        summary=request.summary,
+                        detail=request.detail or "",
                     )
-                )
+                else:
+                    ev = ApprovalEvent(
+                        v=door_version,
+                        re=re,
+                        approval_id=approval_id,
+                        tool=request.tool,
+                        tier=request.tier,
+                        summary=request.summary,
+                        detail=request.detail or "",
+                        grantable=request.grantable,
+                        grant_scope=grant_scope,
+                        digest=request.digest,
+                        risky=list(request.risky),
+                    )
+                await self._send_event(ev)
                 return await future
             finally:
                 self._pending.pop(approval_id, None)
 
-    def resolve(self, approval_id: str, answer: ApprovalAnswer) -> bool:
-        """Resolve a pending approval future; return `False` if unknown."""
-        future = self._pending.pop(approval_id, None)
-        if future is None or future.done():
-            return False
-        future.set_result(answer == "yes")
-        return True
+    async def ask(
+        self,
+        re: str,
+        summary: str,
+        detail: str = "",
+        *,
+        door_version: int = PROTOCOL_VERSION,
+        door_connected: bool = True,
+    ) -> bool:
+        """Legacy boolean approval helper used by custom test tools."""
+        digest = compute_digest("run_command", {"summary": summary}, detail)
+        req = ApprovalRequest(
+            tool="run_command",
+            tier="ask",
+            summary=summary,
+            detail=detail,
+            grantable=False,
+            grant_key=None,
+            risky=(),
+            digest=digest,
+        )
+        ans = await self.ask_request(
+            re,
+            req,
+            door_version=door_version,
+            door_connected=door_connected,
+        )
+        return ans.answer in ("yes", "yes_session")
+
+    def resolve(
+        self,
+        approval_id: str,
+        answer: ApprovalAnswer,
+        *,
+        digest: str | None = None,
+        reason: str | None = None,
+        door_version: int = PROTOCOL_VERSION,
+    ) -> Literal["ok", "unknown", "digest_mismatch"]:
+        """Resolve a pending approval future.
+
+        If `approval_id` is unknown or `digest` does not match, logs an `error`
+        decision and leaves a mismatched pending approval waiting.
+        """
+        pending = self._pending.get(approval_id)
+        if pending is None or pending.future.done():
+            if self._approval_log is not None:
+                self._approval_log.log_decision(
+                    call_id=approval_id,
+                    tool="unknown",
+                    target=approval_id,
+                    digest=digest,
+                    tier="ask",
+                    decision="blocked",
+                    answer="none",
+                    source="error",
+                    reason="unknown approval_id",
+                )
+            return "unknown"
+
+        if (
+            door_version >= 2
+            and pending.digest
+            and digest is not None
+            and digest != pending.digest
+        ):
+            if self._approval_log is not None:
+                self._approval_log.log_decision(
+                    call_id=approval_id,
+                    tool=pending.tool or "unknown",
+                    target=pending.target,
+                    digest=digest,
+                    tier=pending.tier,
+                    decision="asked",
+                    answer="none",
+                    source="error",
+                    reason="approval digest mismatch",
+                )
+            return "digest_mismatch"
+
+        self._pending.pop(approval_id, None)
+        effective_reason = reason if answer == "no" else None
+        pending.future.set_result(
+            PolicyApprovalAnswer(
+                answer=answer,
+                source="user",
+                reason=effective_reason,
+            )
+        )
+        return "ok"
 
     def cancel_all(self) -> None:
-        """Resolve all pending approvals as `False` (`no`), used on `stop`."""
+        """Resolve all pending approvals as user `no` (used on `stop` / `Esc`)."""
         for approval_id in list(self._pending.keys()):
-            future = self._pending.pop(approval_id, None)
-            if future is not None and not future.done():
-                future.set_result(False)
+            pending = self._pending.pop(approval_id, None)
+            if pending is not None and not pending.future.done():
+                pending.future.set_result(
+                    PolicyApprovalAnswer(answer="no", source="user", reason=None)
+                )
 
-
-def _default_agent_builder(model_name: str, ask: AskFn) -> Agent:
-    """Build Aldwin's `Agent` from home configuration, skills, and context (`FR-1`)."""
-    config = load_config().model_copy(update={"model": model_name})
-    secrets = load_secrets()
-    return build_agent(config, secrets, ask)
+    def disconnect_all(self) -> None:
+        """Resolve pending approvals as `no_approver` on disconnect."""
+        for approval_id in list(self._pending.keys()):
+            pending = self._pending.pop(approval_id, None)
+            if pending is not None and not pending.future.done():
+                pending.future.set_result(
+                    PolicyApprovalAnswer(
+                        answer="no",
+                        source="no_approver",
+                        reason=None,
+                    )
+                )
 
 
 class AldwinHost:
@@ -267,27 +455,59 @@ class AldwinHost:
         initial_model: str | None = None,
         available_models: Sequence[str] | Callable[[], Sequence[str]] | None = None,
         persist_model: bool = True,
+        home: Path | None = None,
+        workspace: Workspace | Path | str | None = None,
     ) -> None:
         self._transport = transport
-        self._session_store = session_store or SessionStore()
-        self._agent_builder = agent_builder or _default_agent_builder
+        self._home = (home if home is not None else home_dir()).expanduser().resolve()
+        self._session_store = session_store or SessionStore(
+            sessions_dir=self._home / "sessions"
+        )
+        self._agent_builder = agent_builder
         self._available_models = available_models
         self._persist_model = persist_model
 
-        default_model = initial_model or load_config().model
+        default_model = initial_model or load_config(self._home).model
         self._stored_session: StoredSession = self._session_store.load_latest(
             default_model=default_model
         )
         self._model: str = initial_model or self._stored_session.meta.model
 
+        if isinstance(workspace, Workspace):
+            self._workspace = workspace
+        elif workspace is not None:
+            self._workspace = Workspace(workspace, home=self._home)
+        else:
+            try:
+                self._workspace = Workspace(Path.cwd(), home=self._home)
+            except Exception:
+                ws_fallback = self._home.parent / "aldwin_workspace"
+                ws_fallback.mkdir(parents=True, exist_ok=True)
+                self._workspace = Workspace(ws_fallback, home=self._home)
+
+        self._approval_log = ApprovalLogger(
+            home=self._home,
+            session_id_getter=lambda: self._stored_session.meta.id,
+        )
+        self._policy_session = PolicySession(
+            workspace=self._workspace,
+            home=self._home,
+            on_circuit_breaker=self._on_circuit_breaker,
+        )
+
         self._welcomed = False
+        self._negotiated_version: int = PROTOCOL_VERSION
         self._active_turn_id: str | None = None
         self._active_turn_scope: RequestScope | None = None
         self._last_approval_end_time: float = 0.0
+        self._circuit_breaker_tripped: bool = False
         self._turn_task: asyncio.Task[None] | None = None
         self._serve_task: asyncio.Task[None] | None = None
 
-        self._approvals = ApprovalBroker(self._transport.send_event)
+        self._approvals = ApprovalBroker(
+            self._transport.send_event,
+            approval_log=self._approval_log,
+        )
         self._agent: Agent = self._build_and_attach_agent(self._model)
         self._agent_session: AgentSession = restore_session(
             self._agent,
@@ -296,17 +516,75 @@ class AldwinHost:
 
         self._transport.set_new_conversation_handler(self.new_conversation)
 
+    def _on_circuit_breaker(self) -> None:
+        """Interrupt `AgentSession` after 3 declined actions in one turn."""
+        self._circuit_breaker_tripped = True
+        self._agent_session.interrupt()
+
+    @property
+    def policy_session(self) -> PolicySession:
+        """Return the active `PolicySession`."""
+        return self._policy_session
+
+    @property
+    def workspace(self) -> Workspace:
+        """Return the active `Workspace`."""
+        return self._workspace
+
+    @property
+    def negotiated_version(self) -> int:
+        """Return the protocol version negotiated during `hello` (`1` or `2`)."""
+        return self._negotiated_version
+
+    def workspace_summary(self) -> WorkspaceSummary:
+        """Return workspace root and granted folders for `/workspace`."""
+        folders = tuple(
+            sorted(
+                format_outside_display(f) for f in self._policy_session.granted_folders
+            )
+        )
+        return WorkspaceSummary(
+            root=self._workspace.root,
+            display_root=self._workspace.display_root,
+            granted_folders=folders,
+        )
+
+    def set_workspace(self, new_root: Path | str) -> WorkspaceSummary:
+        """Switch the workspace root and clear session grants."""
+        self._workspace.set_root(new_root, session=self._policy_session)
+        return self.workspace_summary()
+
+    def _default_build_agent(self, model_name: str, ask: AnyAskFn) -> Agent:
+        config = load_config(self._home).model_copy(update={"model": model_name})
+        secrets = load_secrets(self._home)
+        return build_agent(
+            config,
+            secrets,
+            ask,
+            home=self._home,
+            workspace=self._workspace,
+            policy_session=self._policy_session,
+            approval_log=self._approval_log,
+            session_id_getter=lambda: self._stored_session.meta.id,
+        )
+
     def _build_and_attach_agent(self, model_name: str) -> Agent:
         """Build an `Agent` and attach the host's retry and session callbacks."""
-        agent = self._agent_builder(model_name, self.ask)
+        if self._agent_builder is not None:
+            agent = self._agent_builder(model_name, self.ask)
+        else:
+            agent = self._default_build_agent(model_name, self.ask_policy)
+
         if isinstance(agent.model, RetryingModel) and agent.model.on_retry is None:
             agent.model.on_retry = self.on_retry
         for tool_obj in agent._base_tools.values():
-            if (
-                isinstance(tool_obj, RememberTool)
-                and tool_obj._session_id_getter is None
-            ):
-                tool_obj._session_id_getter = lambda: self._stored_session.meta.id
+            inner = (
+                tool_obj.inner_tool
+                if isinstance(tool_obj, PolicyWrappedTool)
+                else tool_obj
+            )
+            if isinstance(inner, RememberTool) and inner._session_id_getter is None:
+                inner._session_id_getter = lambda: self._stored_session.meta.id
         return agent
 
     async def on_retry(
@@ -315,7 +593,7 @@ class AldwinHost:
         max_retries: int,
         _exc: BaseException,
     ) -> None:
-        """Emit a non-terminal `StatusEvent` when the model retries (`FR-8`)."""
+        """Emit a non-terminal `StatusEvent` when the model retries."""
         scope = self._active_turn_scope
         if scope is not None and not scope.terminated:
             await scope.emit(
@@ -342,7 +620,7 @@ class AldwinHost:
 
     async def stop_host(self) -> None:
         """Cancel any active turn, close the transport, and stop the dispatch loop."""
-        self._approvals.cancel_all()
+        self._approvals.disconnect_all()
         if self._turn_task is not None and not self._turn_task.done():
             self._agent_session.interrupt()
             self._turn_task.cancel()
@@ -350,17 +628,45 @@ class AldwinHost:
         await self._transport.close()
         if self._serve_task is not None and not self._serve_task.done():
             await asyncio.gather(self._serve_task, return_exceptions=True)
+        self._approval_log.close()
 
-    async def ask(self, summary: str, detail: str = "") -> bool:
-        """Injected into tools so they can request user approval via the host."""
+    async def ask_policy(self, request: ApprovalRequest) -> PolicyApprovalAnswer:
+        """Injected into `PolicyWrappedTool` to request approval."""
         re_id = self._active_turn_id or "req_turn"
+        connected = not self._transport.closed and self._welcomed
         try:
-            return await self._approvals.ask(re=re_id, summary=summary, detail=detail)
+            return await self._approvals.ask_request(
+                re=re_id,
+                request=request,
+                door_version=self._negotiated_version,
+                door_connected=connected,
+            )
+        finally:
+            self._last_approval_end_time = time.monotonic()
+
+    async def ask(
+        self,
+        summary_or_request: str | ApprovalRequest,
+        detail: str = "",
+    ) -> Any:
+        """Support `ask(ApprovalRequest)` and legacy `ask(summary, detail)`."""
+        if isinstance(summary_or_request, ApprovalRequest):
+            return await self.ask_policy(summary_or_request)
+        re_id = self._active_turn_id or "req_turn"
+        connected = not self._transport.closed and self._welcomed
+        try:
+            return await self._approvals.ask(
+                re=re_id,
+                summary=summary_or_request,
+                detail=detail,
+                door_version=self._negotiated_version,
+                door_connected=connected,
+            )
         finally:
             self._last_approval_end_time = time.monotonic()
 
     async def new_conversation(self) -> None:
-        """Close the current session file and start a fresh conversation (`FR-14`)."""
+        """Close the current session file and start a fresh conversation."""
         self._approvals.cancel_all()
         if self._turn_task is not None and not self._turn_task.done():
             self._agent_session.interrupt()
@@ -372,6 +678,7 @@ class AldwinHost:
             self._agent_session.memory,
             interrupted=False,
         )
+        self._policy_session.reset_turn()
         self._stored_session = self._session_store.create_new(model=self._model)
         self._agent_session = new_session(self._agent)
 
@@ -380,13 +687,18 @@ class AldwinHost:
         while True:
             req = await self._transport.receive_request()
             if req is None:
+                self._approvals.disconnect_all()
                 return
             await self._dispatch(req)
 
     async def _dispatch(self, req: Request) -> None:
         """Route one incoming `Request`."""
         if not self._welcomed and not isinstance(req, HelloRequest):
-            async with RequestScope(req.id, self._transport.send_event) as scope:
+            async with RequestScope(
+                req.id,
+                self._transport.send_event,
+                version=self._negotiated_version,
+            ) as scope:
                 await scope.error(
                     "protocol",
                     "Handshake required: send a `hello` request first.",
@@ -395,7 +707,11 @@ class AldwinHost:
 
         if isinstance(req, TurnRequest):
             if self._turn_task is not None and not self._turn_task.done():
-                async with RequestScope(req.id, self._transport.send_event) as scope:
+                async with RequestScope(
+                    req.id,
+                    self._transport.send_event,
+                    version=self._negotiated_version,
+                ) as scope:
                     await scope.error(
                         "busy",
                         "Aldwin is still working on your last request. "
@@ -403,11 +719,19 @@ class AldwinHost:
                     )
                 return
 
-            turn_scope = RequestScope(req.id, self._transport.send_event)
+            turn_scope = RequestScope(
+                req.id,
+                self._transport.send_event,
+                version=self._negotiated_version,
+            )
             self._turn_task = asyncio.create_task(self._run_turn(turn_scope, req))
             return
 
-        async with RequestScope(req.id, self._transport.send_event) as scope:
+        async with RequestScope(
+            req.id,
+            self._transport.send_event,
+            version=self._negotiated_version,
+        ) as scope:
             if isinstance(req, HelloRequest):
                 await self._handle_hello(scope, req)
             elif isinstance(req, StopRequest):
@@ -418,16 +742,26 @@ class AldwinHost:
                 await self._handle_history(scope, req)
             elif isinstance(req, SetModelRequest):
                 await self._handle_set_model(scope, req)
+            elif isinstance(req, SkillsListRequest):
+                await scope.emit(SkillsEvent(re=req.id, items=[]))
+                await scope.done("ok")
+            elif isinstance(req, TodoGetRequest):
+                await scope.emit(TodoUpdatedEvent(re=req.id, items=[], done=0, total=0))
+                await scope.done("ok")
 
     async def _handle_hello(self, scope: RequestScope, req: HelloRequest) -> None:
-        if req.v_min <= PROTOCOL_VERSION <= req.v_max:
+        common_min = max(MIN_SUPPORTED_VERSION, req.v_min)
+        common_max = min(PROTOCOL_VERSION, req.v_max)
+        if req.v_min <= req.v_max and common_min <= common_max:
+            self._negotiated_version = common_max
+            scope._version = common_max
             self._welcomed = True
             await scope.done("ok")
         else:
             await scope.error(
                 "version_mismatch",
                 f"Protocol version mismatch: client supports {req.v_min}..{req.v_max}, "
-                f"host is v{PROTOCOL_VERSION}.",
+                f"host supports v{MIN_SUPPORTED_VERSION}..v{PROTOCOL_VERSION}.",
             )
 
     async def _handle_stop(self, scope: RequestScope) -> None:
@@ -439,7 +773,17 @@ class AldwinHost:
         await scope.done("ok")
 
     async def _handle_approve(self, scope: RequestScope, req: ApproveRequest) -> None:
-        if self._approvals.resolve(req.approval_id, req.answer):
+        status = self._approvals.resolve(
+            req.approval_id,
+            req.answer,
+            digest=req.digest,
+            reason=req.reason,
+            door_version=self._negotiated_version,
+        )
+        if status == "ok":
+            await scope.done("ok")
+        elif status == "digest_mismatch":
+            # ignore mismatched digest, log as error, keep waiting
             await scope.done("ok")
         else:
             await scope.error(
@@ -499,7 +843,7 @@ class AldwinHost:
         self._model = cleaned
         self._stored_session.meta.model = cleaned
         if self._persist_model:
-            update_config_model(cleaned)
+            update_config_model(cleaned, self._home)
 
         self._agent = self._build_and_attach_agent(self._model)
         self._agent_session = switch_session_model(self._agent_session, self._agent)
@@ -515,6 +859,8 @@ class AldwinHost:
         async with scope:
             self._active_turn_id = req.id
             self._active_turn_scope = scope
+            self._circuit_breaker_tripped = False
+            self._policy_session.reset_turn()
             self._agent_session._interrupt.clear()
             step_text_chunks: list[str] = []
             streamed_before_tools: str = ""
@@ -549,6 +895,11 @@ class AldwinHost:
                         )
                         if call.name == "final_answer":
                             continue
+                        self._policy_session.enqueue_step_call(
+                            call.id,
+                            call.name,
+                            call.arguments,
+                        )
                         tool_start_times[call.id] = time.monotonic()
                         await scope.emit(
                             ToolCallEvent(
@@ -598,6 +949,7 @@ class AldwinHost:
                     elif isinstance(ev, StepEvent):
                         step_text_chunks.clear()
                         streamed_before_tools = ""
+                        self._policy_session.clear_step_calls()
                         self._session_store.save(
                             self._stored_session,
                             self._agent_session.memory,
@@ -614,6 +966,13 @@ class AldwinHost:
                         self._agent_session.memory,
                         interrupted=False,
                     )
+                    if self._circuit_breaker_tripped and self._negotiated_version >= 2:
+                        await scope.emit(
+                            NoticeEvent(
+                                re=req.id,
+                                message=CIRCUIT_BREAKER_NOTICE,
+                            )
+                        )
                     await scope.done("stopped", usage=_to_token_usage(final_usage))
                     return
 
@@ -630,6 +989,7 @@ class AldwinHost:
             except asyncio.CancelledError:
                 self._approvals.cancel_all()
                 self._agent_session._interrupt.clear()
+                self._policy_session.clear_step_calls()
                 self._flush_partial_text(step_text_chunks)
                 self._session_store.save(
                     self._stored_session,
@@ -642,6 +1002,7 @@ class AldwinHost:
             except Exception as exc:
                 self._approvals.cancel_all()
                 self._agent_session._interrupt.clear()
+                self._policy_session.clear_step_calls()
                 logger.exception("Turn %s failed", req.id)
                 self._session_store.save(
                     self._stored_session,

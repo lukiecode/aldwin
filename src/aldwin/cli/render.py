@@ -24,6 +24,7 @@ from aldwin.cli.theme import (
     format_relative_time,
     format_tokens,
 )
+from aldwin.client import sanitize_display_text
 from aldwin.protocol import (
     ApprovalAnswer,
     ApprovalEvent,
@@ -36,6 +37,7 @@ from aldwin.protocol import (
 )
 
 MAX_PANEL_WIDTH: Final[int] = 76
+MAX_DIFF_PREVIEW_LINES: Final[int] = 24
 
 ERROR_COPY: Final[dict[ErrorCode, str]] = {
     "auth_failed": "Your OpenAI key was rejected. Run `aldwin setup`.",
@@ -182,8 +184,7 @@ def _is_closing_fence(stripped_line: str, fence: str) -> bool:
 def split_markdown_blocks(buffer: str) -> tuple[list[str], str]:
     """Split `buffer` on blank lines outside code fences into `(completed, remainder)`.
 
-    Blank lines inside ` ``` ` or `~~~` fenced code blocks never split the block
-    (`FR-6`, `TC-05`).
+    Blank lines inside ` ``` ` or `~~~` fenced code blocks never split the block.
     """
     if not buffer:
         return [], ""
@@ -246,8 +247,9 @@ class ChatRenderer:
         first_run: bool,
         model: str,
         display_home: str,
+        display_workspace: str | None = None,
     ) -> None:
-        """Render the welcome panel or session header panel (`FR-2`, `FR-3`)."""
+        """Render the welcome panel or session header panel."""
         width = _panel_width(self.console)
         if first_run:
             panel = Panel(
@@ -259,15 +261,16 @@ class ChatRenderer:
                 padding=(0, 1),
             )
         else:
-            max_home = max(12, width - len(model) - 18)
-            shown_home = (
-                display_home
-                if len(display_home) <= max_home
-                else f"…{display_home[-(max_home - 1) :]}"
+            raw_loc = (
+                f"workspace: {display_workspace}" if display_workspace else display_home
+            )
+            max_loc = max(12, width - len(model) - 18)
+            shown_loc = (
+                raw_loc if len(raw_loc) <= max_loc else f"…{raw_loc[-(max_loc - 1) :]}"
             )
             panel = Panel(
                 Text(TIPS_LINE, style="muted"),
-                title=f"[accent]Aldwin[/accent] · {model} · {shown_home}",
+                title=f"[accent]Aldwin[/accent] · {model} · {shown_loc}",
                 title_align="left",
                 border_style="border",
                 width=width,
@@ -282,7 +285,7 @@ class ChatRenderer:
         updated_at: str | None = None,
         now: datetime | None = None,
     ) -> None:
-        """Render recent messages dimmed, divider, and interrupted notice (`FR-3`)."""
+        """Render recent messages dimmed, divider, and interrupted notice."""
         if event.messages:
             last_at = updated_at
             for item in event.messages:
@@ -311,25 +314,88 @@ class ChatRenderer:
                 self.console.print(notice)
 
     def render_new_conversation_divider(self) -> None:
-        """Render the divider shown when `/new` starts a fresh conversation (`FR-5`)."""
+        """Render the divider shown when `/new` starts a fresh conversation."""
         if self.plain:
             self.console.print("──── new conversation ────")
         else:
             self.console.print(Rule("new conversation", style="muted", characters="─"))
 
-    def build_approval_panel(self, event: ApprovalEvent) -> Panel:
-        """Construct the yellow bordered approval `Panel` (`FR-8`)."""
-        detail_text = event.detail.strip() or event.summary.strip()
-        is_multiline = "\n" in detail_text
+    def build_approval_panel(
+        self,
+        event: ApprovalEvent,
+        *,
+        expanded: bool = False,
+    ) -> Panel:
+        """Construct the yellow bordered approval `Panel`."""
+        clean_summary = sanitize_display_text(event.summary.strip())
+        clean_detail = sanitize_display_text(event.detail.strip())
+        detail_text = clean_detail or clean_summary
         body = Text()
-        detail_style = "" if self.plain else ("fg" if is_multiline else "code")
-        body.append(detail_text, style=detail_style)
-        separator = "\n\n[y/n]" if is_multiline else "  [y/n]"
-        body.append(separator, style="warn")
+
+        risky_labels = [
+            sanitize_display_text(lbl) for lbl in event.risky if lbl and lbl.strip()
+        ]
+        if risky_labels:
+            body.append(f"⚠ {' · '.join(risky_labels)}\n", style="warn")
+
+        if event.tier == "diff":
+            lines = detail_text.splitlines() or [detail_text]
+            if not expanded and len(lines) > MAX_DIFF_PREVIEW_LINES:
+                shown_lines = lines[:MAX_DIFF_PREVIEW_LINES]
+                more_count = len(lines) - MAX_DIFF_PREVIEW_LINES
+            else:
+                shown_lines = lines
+                more_count = 0
+
+            for idx, line in enumerate(shown_lines):
+                if idx > 0:
+                    body.append("\n")
+                if self.plain:
+                    line_style = ""
+                elif line.startswith("+") and not line.startswith("+++"):
+                    line_style = "ok"
+                elif line.startswith("-") and not line.startswith("---"):
+                    line_style = "err"
+                elif line.startswith(("@@", "---", "+++")):
+                    line_style = "accent"
+                else:
+                    line_style = "fg"
+                body.append(line, style=line_style)
+
+            if more_count > 0:
+                body.append(
+                    f"\n… {more_count} more lines (ctrl+o to expand)",
+                    style="muted",
+                )
+
+            if event.grantable:
+                body.append(
+                    "\n\n[y] yes  [a] yes for this file this session  [N] no",
+                    style="warn",
+                )
+            else:
+                body.append("\n\n[y] yes  [N] no", style="warn")
+        else:
+            is_multiline = "\n" in detail_text or bool(risky_labels)
+            detail_style = (
+                "" if self.plain else ("fg" if "\n" in detail_text else "code")
+            )
+            body.append(detail_text, style=detail_style)
+            if event.grantable:
+                sep = "\n\n" if is_multiline else "  "
+                body.append(
+                    f"{sep}[y] yes for this folder this session  [N] no",
+                    style="warn",
+                )
+            else:
+                separator = (
+                    "\n\n[y] yes  [N] no" if is_multiline else "  [y] yes  [N] no"
+                )
+                body.append(separator, style="warn")
 
         return Panel(
             body,
-            title=event.summary or "Approve action?",
+            title=clean_summary or "Approve action?",
             title_align="left",
             border_style="warn",
             width=_panel_width(self.console),
@@ -345,13 +411,18 @@ class ChatRenderer:
             except OSError:
                 pass
 
-    def render_approval_panel(self, event: ApprovalEvent) -> None:
-        """Print the bordered approval panel and ring the terminal bell (`FR-8`)."""
+    def render_approval_panel(
+        self,
+        event: ApprovalEvent,
+        *,
+        expanded: bool = False,
+    ) -> None:
+        """Print the bordered approval panel and ring the terminal bell."""
         self.ring_bell()
-        self.console.print(self.build_approval_panel(event))
+        self.console.print(self.build_approval_panel(event, expanded=expanded))
 
     def render_error(self, code: ErrorCode, message: str = "") -> None:
-        """Render a protocol `ErrorEvent` as one actionable line (`FR-10`, `TC-11`)."""
+        """Render a protocol `ErrorEvent` as one actionable line."""
         copy = ERROR_COPY.get(code) or message or ERROR_COPY["internal"]
         line = Text()
         line.append("✗ ", style="err")
@@ -359,7 +430,7 @@ class ChatRenderer:
         self.console.print(line)
 
     def render_status_notice(self, message: str) -> None:
-        """Render a non-terminal status notice such as a retry message (`FR-10`)."""
+        """Render a non-terminal status notice such as a retry message."""
         self.console.print(Text(f"  {message}", style="muted"))
 
     def start_turn(
@@ -409,7 +480,7 @@ class TurnRenderer:
         return max(0.0, self._clock() - self._started_at)
 
     def format_status_line(self) -> str:
-        """Format the live status text (`working · 12s · 3 tools`) (`FR-7`)."""
+        """Format the live status text (`working · 12s · 3 tools`)."""
         elapsed = format_elapsed_s(self.elapsed_seconds())
         tools = _tool_word(self._tool_count)
         return f"working · {elapsed} · {tools}"
@@ -442,7 +513,7 @@ class TurnRenderer:
         return Group(*parts)
 
     def start(self) -> None:
-        """Start the transient `Live` display and `0.5 s` refresh ticker (`FR-7`)."""
+        """Start the transient `Live` display and `0.5 s` refresh ticker."""
         self._started_at = self._clock()
         if self.plain:
             return
@@ -520,7 +591,7 @@ class TurnRenderer:
         self._print_markdown_block(combined)
 
     def on_text(self, delta: str) -> None:
-        """Append a `text` delta and flush finished markdown blocks (`FR-6`)."""
+        """Append a `text` delta and flush finished markdown blocks."""
         if not delta:
             return
         self._markdown_buffer += delta
@@ -531,7 +602,7 @@ class TurnRenderer:
         self._refresh_live()
 
     def on_tool_call(self, event: ToolCallEvent) -> None:
-        """Flush buffered text, track pending `⚙` card, and update spinner (`FR-7`)."""
+        """Flush buffered text, track pending `⚙` card, and update spinner."""
         self._flush_markdown_buffer()
         display_args = format_display_args(event.args_preview, tool_name=event.name)
         self._pending_tools[event.call_id] = (event.name, display_args)
@@ -595,12 +666,12 @@ class TurnRenderer:
         self._refresh_live()
 
     def on_status(self, message: str) -> None:
-        """Render a non-terminal status event (`FR-10`)."""
+        """Render a non-terminal status event."""
         self._chat.render_status_notice(message)
         self._refresh_live()
 
     def pause_for_approval(self, event: ApprovalEvent) -> None:
-        """Stop turn `Live` and show the transient approval box (`FR-8`)."""
+        """Stop turn `Live` and show the transient approval box."""
         self._flush_markdown_buffer()
         self._stop_live()
         if not self.plain and self.console.is_interactive:
@@ -616,12 +687,27 @@ class TurnRenderer:
         else:
             self._chat.render_approval_panel(event)
 
+    def expand_approval_panel(self, event: ApprovalEvent) -> None:
+        """Expand a folded 24-line diff panel in place on `Ctrl+O`."""
+        panel = self._chat.build_approval_panel(event, expanded=True)
+        if self._approval_live is not None:
+            self._approval_live.update(panel, refresh=True)
+        else:
+            self.console.print(panel)
+
     def resolve_approval(self, event: ApprovalEvent, answer: ApprovalAnswer) -> None:
         """Collapse the approval box into a one-line `✓ approved` / `✗ declined` row."""
         self._stop_approval_live()
-        target = _approval_record_target(event)
+        target = sanitize_display_text(_approval_record_target(event))
         if answer == "yes":
             line = Text("  ✓ approved", style="ok", no_wrap=True, overflow="ellipsis")
+        elif answer == "yes_session":
+            line = Text(
+                "  ✓ approved for session",
+                style="ok",
+                no_wrap=True,
+                overflow="ellipsis",
+            )
         else:
             line = Text("  ✗ declined", style="warn", no_wrap=True, overflow="ellipsis")
         if target:
@@ -631,7 +717,7 @@ class TurnRenderer:
         self.resume_after_approval()
 
     def resume_after_approval(self) -> None:
-        """Restart `Live` after the user answers the approval prompt (`FR-8`)."""
+        """Restart `Live` after the user answers the approval prompt."""
         self._stop_approval_live()
         if self.plain:
             return
@@ -690,7 +776,7 @@ class TurnRenderer:
         return total_tokens
 
     def finish_error(self, event: ErrorEvent) -> None:
-        """Stop `Live`, flush partial output, and print the error line (`FR-10`)."""
+        """Stop `Live`, flush partial output, and print the error line."""
         self._flush_markdown_buffer()
         self._stop_live()
         self._chat.render_error(event.code, event.message)

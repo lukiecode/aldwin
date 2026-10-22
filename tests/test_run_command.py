@@ -19,7 +19,7 @@ from aldwin.core.tools.run_command import (
 
 
 async def test_run_command_approved_executes_in_cwd(tmp_path: Path) -> None:
-    """TC-07: Approved `run_command` runs in `cwd` and returns `exit 0`."""
+    """Approved `run_command` runs in `cwd` and returns `exit 0`."""
     (tmp_path / "hello_aldwin.txt").write_text("hi\n", encoding="utf-8")
     ask_calls: list[tuple[str, str]] = []
 
@@ -39,7 +39,7 @@ async def test_run_command_approved_executes_in_cwd(tmp_path: Path) -> None:
 
 
 async def test_run_command_declined_skips_execution(tmp_path: Path) -> None:
-    """TC-08: Declined `run_command` skips execution and returns `user declined`."""
+    """Declined `run_command` skips execution and returns `user declined`."""
     marker = tmp_path / "should_not_be_created.txt"
     ask_calls: list[tuple[str, str]] = []
 
@@ -62,7 +62,7 @@ async def test_run_command_declined_skips_execution(tmp_path: Path) -> None:
 async def test_run_command_refuses_sudo_and_interactive_before_ask(
     tmp_path: Path,
 ) -> None:
-    """TC-09: `sudo`, `su`, `doas`, and interactive commands fail before `ask()`."""
+    """`sudo`, `su`, `doas`, and interactive commands fail before `ask`."""
 
     async def fail_if_asked(summary: str, detail: str = "") -> bool:
         raise AssertionError(f"ask() called for refused command: {summary} {detail}")
@@ -114,7 +114,7 @@ async def test_run_command_refuses_sudo_and_interactive_before_ask(
 
 
 async def test_run_command_scrubs_secret_env_vars(tmp_path: Path) -> None:
-    """TC-10: `run_command` strips secret env vars and sets non-TTY defaults."""
+    """`run_command` strips secret env vars and sets non-TTY defaults."""
     test_env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": str(tmp_path),
@@ -177,7 +177,7 @@ async def test_run_command_scrubs_secret_env_vars(tmp_path: Path) -> None:
 
 
 async def test_run_command_timeout_kills_process_group(tmp_path: Path) -> None:
-    """TC-11: Timeout kills the entire process group and leaves no zombies."""
+    """Timeout kills the entire process group and leaves no zombies."""
     pid_file = tmp_path / "child.pid"
 
     async def approve_yes(_s: str, _d: str = "") -> bool:
@@ -202,7 +202,7 @@ async def test_run_command_timeout_kills_process_group(tmp_path: Path) -> None:
 
 
 async def test_run_command_truncates_output_head_4k_tail_6k(tmp_path: Path) -> None:
-    """TC-12: 50,000-char output keeps head 4k and tail 6k with cut marker."""
+    """50,000-char output keeps head 4k and tail 6k with cut marker."""
     raw = ("A" * 4_000) + ("M" * 40_000) + ("Z" * 6_000)
     truncated = truncate_command_output(raw)
     assert truncated == f"{'A' * 4_000}\n… [40000 chars cut] …\n{'Z' * 6_000}"
@@ -225,7 +225,7 @@ async def test_run_command_truncates_output_head_4k_tail_6k(tmp_path: Path) -> N
 async def test_run_command_cancellation_kills_process_group_under_1s(
     tmp_path: Path,
 ) -> None:
-    """TC-13 (unit): Cancelling `RunCommandTool` kills the process group in < 1s."""
+    """Cancelling `RunCommandTool` kills the process group in < 1s."""
     pid_file = tmp_path / "cancel_child.pid"
 
     async def approve_yes(_s: str, _d: str = "") -> bool:
@@ -257,7 +257,7 @@ async def test_run_command_cancellation_kills_process_group_under_1s(
 async def test_run_command_length_bounds_and_non_interactive_args(
     tmp_path: Path,
 ) -> None:
-    """TC-21: Length bounds are enforced; `python3 -c` and `sh -c` are allowed."""
+    """Length bounds are enforced; `python3 -c` and `sh -c` are allowed."""
     ask_count = 0
 
     async def approve_yes(_s: str, _d: str = "") -> bool:
@@ -303,7 +303,7 @@ async def test_run_command_length_bounds_and_non_interactive_args(
 
 
 async def test_run_command_nonzero_exit_and_stderr(tmp_path: Path) -> None:
-    """TC-22: Non-zero exit code and `stderr` return `ok=False` and `exit N`."""
+    """Non-zero exit code and `stderr` return `ok=False` and `exit N`."""
 
     async def approve_yes(_s: str, _d: str = "") -> bool:
         return True
@@ -325,7 +325,7 @@ async def test_run_command_nonzero_exit_and_stderr(tmp_path: Path) -> None:
 async def test_run_command_approval_wait_does_not_trigger_timeout(
     tmp_path: Path,
 ) -> None:
-    """TC-23: Waiting on `ask()` does not count against execution timeout."""
+    """Waiting on `ask` does not count against execution timeout."""
 
     async def slow_approve(_s: str, _d: str = "") -> bool:
         await asyncio.sleep(0.25)
@@ -364,7 +364,7 @@ async def test_run_command_sigkill_escalation_when_sigterm_ignored(
 async def test_run_command_approval_wait_and_post_approval_timeout_in_agent(
     tmp_path: Path,
 ) -> None:
-    """TC-05 & TC-06: `tool_timeout` skips `ask()`; post-approval timeout fires."""
+    """`tool_timeout` skips `ask`; post-approval timeout fires."""
     from agentling import Agent, ToolResultEvent
     from fakes.model import FakeModel, FakeTurn
 
@@ -421,3 +421,32 @@ async def test_run_command_approval_wait_and_post_approval_timeout_in_agent(
     assert results_to[0].is_error is False
     assert "Command timed out after 0.1s and was killed." in results_to[0].content
     assert "ToolTimeoutError" not in results_to[0].content
+
+
+async def test_run_command_clean_env_strips_all_unlisted_and_secret_vars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`run_command('env')` excludes `OPENAI_API_KEY` and `GITHUB_TOKEN`."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test12345678901234567890")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret1234567890123456789012345678")
+    monkeypatch.setenv("UNLISTED_PARENT_VAR", "should_not_leak")
+    monkeypatch.setenv("ALLOWED_CUSTOM_VAR", "allowed_123")
+
+    async def approve_yes(_s: str, _d: str = "") -> bool:
+        return True
+
+    tool = build_run_command_tool(
+        approve_yes,
+        cwd=tmp_path,
+        env_allow=["ALLOWED_CUSTOM_VAR", "GITHUB_TOKEN"],
+    )
+    res = await tool.call({"command": "env"})
+    assert res.ok is True
+    out = str(res)
+    assert "PATH=" in out
+    assert "HOME=" in out
+    assert "ALLOWED_CUSTOM_VAR=allowed_123" in out
+    assert "OPENAI_API_KEY" not in out
+    assert "GITHUB_TOKEN" not in out
+    assert "UNLISTED_PARENT_VAR" not in out

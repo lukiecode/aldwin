@@ -1,8 +1,9 @@
-"""Slash command completer and command handlers for Aldwin's chat screen (`FR-5`)."""
+"""Slash command completer and command handlers for Aldwin's chat screen."""
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable
+from pathlib import Path
 from typing import Final, Protocol
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
@@ -17,6 +18,8 @@ from aldwin.client import (
     PersonaSummary,
     SkillsReport,
     ToolInfo,
+    WorkspaceError,
+    WorkspaceSummary,
 )
 from aldwin.protocol import DoneEvent, ErrorEvent
 
@@ -27,6 +30,7 @@ SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
     ("/persona", "Show current persona and file path"),
     ("/memory", "Show profile and recent notes"),
     ("/skills", "List installed skills"),
+    ("/workspace", "Show or switch the workspace folder"),
     ("/tools", "List built-in tools"),
     ("/exit", "Save and exit Aldwin"),
 )
@@ -62,9 +66,13 @@ class SlashCommandClient(Protocol):
 
     def tools_summary(self) -> list[ToolInfo]: ...
 
+    def workspace_summary(self) -> WorkspaceSummary: ...
+
+    def set_workspace(self, new_root: Path | str) -> WorkspaceSummary: ...
+
 
 class SlashCompleter(Completer):
-    """Prompt-toolkit completer for `/help`, `/new`, `/model`, etc. (`FR-5`)."""
+    """Prompt-toolkit completer for `/help`, `/new`, `/model`, etc.."""
 
     def get_completions(
         self,
@@ -252,6 +260,35 @@ def _render_skills(client: SlashCommandClient, renderer: ChatRenderer) -> None:
         console.print(err_line)
 
 
+def _render_workspace(
+    arg: str,
+    *,
+    client: SlashCommandClient,
+    renderer: ChatRenderer,
+) -> None:
+    console = renderer.console
+    if arg:
+        try:
+            summary = client.set_workspace(arg)
+        except WorkspaceError as exc:
+            console.print(Text(str(exc), style="err"))
+            return
+        console.print(
+            Text(
+                f"workspace: {summary.display_root} · session grants cleared",
+                style="ok",
+            )
+        )
+        return
+
+    summary = client.workspace_summary()
+    folders = (
+        ", ".join(summary.granted_folders) if summary.granted_folders else "(none)"
+    )
+    console.print(Text(f"workspace: {summary.display_root}", style="fg"))
+    console.print(Text(f"also allowed this session: {folders}", style="muted"))
+
+
 def _render_tools(client: SlashCommandClient, renderer: ChatRenderer) -> None:
     console = renderer.console
     tools = client.tools_summary()
@@ -275,7 +312,7 @@ async def handle_slash_command(
     prompt_line: Callable[[str], Awaitable[str]],
     on_reset_tokens: Callable[[], None] | None = None,
 ) -> bool:
-    """Execute a `/command` line (`FR-5`).
+    """Execute a `/command` line.
 
     Returns `True` when `/exit` is invoked and the chat loop should terminate.
     """
@@ -314,6 +351,10 @@ async def handle_slash_command(
 
     if cmd == "/skills":
         _render_skills(client, renderer)
+        return False
+
+    if cmd == "/workspace":
+        _render_workspace(arg, client=client, renderer=renderer)
         return False
 
     if cmd == "/tools":

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -21,6 +21,10 @@ from aldwin.host.in_process import (
     SkillsReport,
     SkillSummary,
     ToolInfo,
+    WorkspaceError,
+    WorkspaceNotAllowedError,
+    WorkspaceNotFoundError,
+    WorkspaceSummary,
     bootstrap_host,
     check_openai_key,
     get_builtin_tools,
@@ -34,9 +38,11 @@ from aldwin.host.in_process import (
     open_in_process_client,
     pop_profile_truncation_warning,
     purge_home_data,
+    resolve_workspace_summary,
     save_setup,
 )
 from aldwin.protocol import (
+    MIN_SUPPORTED_VERSION,
     PROTOCOL_VERSION,
     ApprovalAnswer,
     ApproveRequest,
@@ -54,9 +60,14 @@ from aldwin.protocol import (
 )
 
 
-def bootstrap(*, plain: bool = False, debug: bool = False) -> BootstrapResult:
+def bootstrap(
+    *,
+    plain: bool = False,
+    debug: bool = False,
+    workspace: Path | str | None = None,
+) -> BootstrapResult:
     """Initialise the Aldwin host and return startup metadata for the door."""
-    return bootstrap_host(plain=plain, debug=debug)
+    return bootstrap_host(plain=plain, debug=debug, workspace=workspace)
 
 
 class ProtocolError(Exception):
@@ -68,7 +79,7 @@ class ProtocolError(Exception):
 
 
 class AldwinClient:
-    """Async client that every Python door uses to talk to the Aldwin host (`FR-16`)."""
+    """Async client that every Python door uses to talk to the Aldwin host."""
 
     def __init__(
         self,
@@ -77,6 +88,8 @@ class AldwinClient:
         model_getter: Callable[[], str] | None = None,
         session_id_getter: Callable[[], str] | None = None,
         updated_at_getter: Callable[[], str | None] | None = None,
+        workspace_getter: Callable[[], WorkspaceSummary] | None = None,
+        workspace_setter: Callable[[Path | str], WorkspaceSummary] | None = None,
         home: Path | None = None,
     ) -> None:
         self._transport = transport
@@ -87,9 +100,16 @@ class AldwinClient:
         self._model_getter = model_getter
         self._session_id_getter = session_id_getter
         self._updated_at_getter = updated_at_getter
+        self._workspace_getter = workspace_getter
+        self._workspace_setter = workspace_setter
         self._home = home
         self._fallback_model = "gpt-4o"
         self._fallback_session_id = "new"
+        self._fallback_workspace = WorkspaceSummary(
+            root=Path.cwd().resolve(),
+            display_root=str(Path.cwd().resolve()),
+            granted_folders=(),
+        )
 
     @property
     def model(self) -> str:
@@ -149,11 +169,15 @@ class AldwinClient:
     async def connect(
         self,
         *,
-        v_min: int = PROTOCOL_VERSION,
+        v_min: int = MIN_SUPPORTED_VERSION,
         v_max: int = PROTOCOL_VERSION,
     ) -> DoneEvent:
-        """Perform the initial `hello` handshake with the host (`FR-4`)."""
-        if self._connected_event is not None and v_min == PROTOCOL_VERSION == v_max:
+        """Perform the initial `hello` handshake with the host."""
+        if (
+            self._connected_event is not None
+            and v_min == MIN_SUPPORTED_VERSION
+            and v_max == PROTOCOL_VERSION
+        ):
             return self._connected_event
         terminal = await self._request_terminal(HelloRequest(v_min=v_min, v_max=v_max))
         if isinstance(terminal, ErrorEvent):
@@ -161,10 +185,15 @@ class AldwinClient:
         self._connected_event = terminal
         return terminal
 
-    async def turn(self, text: str) -> AsyncGenerator[Event, None]:
-        """Send a `turn` request and yield events until `done` or `error` (`FR-7`)."""
+    async def turn(
+        self,
+        text: str,
+        *,
+        skills: Sequence[str] = (),
+    ) -> AsyncGenerator[Event, None]:
+        """Send a `turn` request and yield events until `done` or `error`."""
         self._ensure_reader()
-        request = TurnRequest(text=text)
+        request = TurnRequest(text=text, skills=list(skills))
         queue: asyncio.Queue[Event | None] = asyncio.Queue()
         self._queues[request.id] = queue
         try:
@@ -180,21 +209,29 @@ class AldwinClient:
             self._queues.pop(request.id, None)
 
     async def stop(self) -> DoneEvent | ErrorEvent:
-        """Stop the currently running turn (`FR-8`)."""
+        """Stop the currently running turn."""
         return await self._request_terminal(StopRequest())
 
     async def approve(
         self,
         approval_id: str,
         answer: ApprovalAnswer,
+        *,
+        digest: str | None = None,
+        reason: str | None = None,
     ) -> DoneEvent | ErrorEvent:
-        """Send a `yes` or `no` answer for a pending approval (`FR-9`)."""
+        """Send an approval answer (`yes`, `yes_session`, or `no`)."""
         return await self._request_terminal(
-            ApproveRequest(approval_id=approval_id, answer=answer)
+            ApproveRequest(
+                approval_id=approval_id,
+                answer=answer,
+                digest=digest,
+                reason=reason,
+            )
         )
 
     async def history(self, limit: int = 20) -> HistoryEvent:
-        """Fetch recent conversation messages and `interrupted` flag (`FR-13`)."""
+        """Fetch recent conversation messages and `interrupted` flag."""
         self._ensure_reader()
         request = HistoryRequest(limit=limit)
         queue: asyncio.Queue[Event | None] = asyncio.Queue()
@@ -218,35 +255,51 @@ class AldwinClient:
             self._queues.pop(request.id, None)
 
     async def set_model(self, name: str) -> DoneEvent | ErrorEvent:
-        """Switch the active model for subsequent turns (`FR-15`)."""
+        """Switch the active model for subsequent turns."""
         result = await self._request_terminal(SetModelRequest(name=name))
         if isinstance(result, DoneEvent):
             self._fallback_model = name.strip()
         return result
 
     async def new_conversation(self) -> None:
-        """Close the current session file and start a new conversation (`FR-14`)."""
+        """Close the current session file and start a new conversation."""
         await self._transport.new_conversation()
 
     async def list_models(self) -> list[str]:
-        """Return available OpenAI chat models for `/model` (`FR-5`)."""
+        """Return available OpenAI chat models for `/model`."""
         return await list_available_models(home=self._home)
 
     def persona_summary(self) -> PersonaSummary:
-        """Return current persona text and path metadata for `/persona` (`FR-5`)."""
+        """Return current persona text and path metadata for `/persona`."""
         return get_persona_summary(self._home)
 
     def memory_summary(self) -> MemorySummary:
-        """Return profile and recent notes summary for `/memory` (`FR-5`)."""
+        """Return profile and recent notes summary for `/memory`."""
         return get_memory_summary(self._home)
 
     def skills_report(self) -> SkillsReport:
-        """Return valid and invalid skills report for `/skills` (`FR-5`)."""
+        """Return valid and invalid skills report for `/skills`."""
         return get_skills_report(self._home)
 
     def tools_summary(self) -> list[ToolInfo]:
-        """Return built-in tools descriptors for `/tools` (`FR-5`)."""
+        """Return built-in tools descriptors for `/tools`."""
         return get_builtin_tools()
+
+    def workspace_summary(self) -> WorkspaceSummary:
+        """Return current workspace root and session-approved folders."""
+        if self._workspace_getter is not None:
+            return self._workspace_getter()
+        return self._fallback_workspace
+
+    def set_workspace(self, new_root: Path | str) -> WorkspaceSummary:
+        """Switch the active workspace root and clear session grants."""
+        if self._workspace_setter is not None:
+            return self._workspace_setter(new_root)
+        self._fallback_workspace = resolve_workspace_summary(
+            new_root,
+            home=self._home,
+        )
+        return self._fallback_workspace
 
     async def close(self) -> None:
         """Close the client and underlying transport."""
@@ -262,6 +315,7 @@ __all__ = [
     "AldwinClient",
     "BootstrapResult",
     "ClientBootstrapError",
+    "ClientTransport",
     "InvalidSkillSummary",
     "KeyCheckResult",
     "MemorySummary",
@@ -273,6 +327,10 @@ __all__ = [
     "SkillSummary",
     "SkillsReport",
     "ToolInfo",
+    "WorkspaceError",
+    "WorkspaceNotAllowedError",
+    "WorkspaceNotFoundError",
+    "WorkspaceSummary",
     "bootstrap",
     "check_openai_key",
     "get_builtin_tools",

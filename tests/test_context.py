@@ -15,7 +15,7 @@ from aldwin.core.settings import LimitsConfig
 
 
 def test_build_context_trims_to_last_20_user_exchanges(aldwin_home: Path) -> None:
-    """TC-02: 30 user turns are trimmed to the last 20 with system message first."""
+    """30 user turns are trimmed to the last 20 with system message first."""
     ensure_home(aldwin_home)
     limits = LimitsConfig(context_exchanges=20)
     ctx = build_context(aldwin_home, limits)
@@ -41,7 +41,7 @@ def test_build_context_trims_to_last_20_user_exchanges(aldwin_home: Path) -> Non
 
 
 def test_build_context_never_splits_tool_call_from_results(aldwin_home: Path) -> None:
-    """TC-03: Kept window extends backward when cut lands mid tool-call sequence."""
+    """Kept window extends backward when cut lands mid tool-call sequence."""
     ensure_home(aldwin_home)
     limits = LimitsConfig(context_exchanges=20)
     ctx = build_context(aldwin_home, limits)
@@ -93,7 +93,7 @@ def test_build_context_never_splits_tool_call_from_results(aldwin_home: Path) ->
 
 
 def test_build_context_reloads_persona_between_turns(aldwin_home: Path) -> None:
-    """TC-04: Editing `persona.md` between turns updates the next system message."""
+    """Editing `persona.md` between turns updates the next system message."""
     ensure_home(aldwin_home)
     persona_path = aldwin_home / "persona.md"
     persona_path.write_text("Be warm and friendly.\n", encoding="utf-8")
@@ -117,7 +117,7 @@ def test_build_context_truncates_persona_over_cap_and_warns_once(
     aldwin_home: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """TC-05: Persona > 2,000 chars is truncated in the prompt and logged once."""
+    """Persona > 2,000 chars is truncated in the prompt and logged once."""
     ensure_home(aldwin_home)
     persona_path = aldwin_home / "persona.md"
     overlong_persona = "A" * 2500
@@ -134,8 +134,8 @@ def test_build_context_truncates_persona_over_cap_and_warns_once(
         out2 = ctx(messages)
 
     expected_persona_section = "## Persona\n" + ("A" * 2000)
-    assert out1[0].content.endswith(expected_persona_section)
-    assert out2[0].content.endswith(expected_persona_section)
+    assert expected_persona_section in out1[0].content
+    assert expected_persona_section in out2[0].content
     assert "A" * 2001 not in out1[0].content
 
     # File on disk is untouched.
@@ -154,7 +154,7 @@ def test_build_context_truncates_persona_over_cap_and_warns_once(
 def test_build_context_system_order_with_memory_block_and_missing_persona(
     aldwin_home: Path,
 ) -> None:
-    """TC-15: System message order (instructions -> persona -> memory) and fallback."""
+    """System message order (instructions -> persona -> memory) and fallback."""
     ensure_home(aldwin_home)
     (aldwin_home / "persona.md").unlink()
 
@@ -173,16 +173,53 @@ def test_build_context_system_order_with_memory_block_and_missing_persona(
     sys_text = result[0].content
 
     assert sys_text.startswith("BASE+SKILLS\n\n## Persona\n")
-    assert sys_text.endswith(f"\n\n{memory_block}")
+    assert f"\n\n{memory_block}\n\n<environment>\n" in sys_text
     persona_idx = sys_text.index("## Persona\n")
     memory_idx = sys_text.index("<memory>")
-    assert 0 < persona_idx < memory_idx
+    env_idx = sys_text.index("<environment>")
+    assert 0 < persona_idx < memory_idx < env_idx
+
+
+def test_system_message_environment_block_updates_across_midnight(
+    aldwin_home: Path,
+    tmp_path: Path,
+) -> None:
+    """System message `<environment>` block updates date across midnight."""
+    from datetime import datetime, timezone
+
+    ensure_home(aldwin_home)
+    ws_dir = tmp_path / "code" / "aldwin"
+    ws_dir.mkdir(parents=True)
+
+    current_dt = datetime(2026, 10, 22, 23, 59, tzinfo=timezone.utc)
+    ctx = build_context(
+        aldwin_home,
+        LimitsConfig(),
+        workspace=ws_dir,
+        now_fn=lambda: current_dt,
+    )
+    messages = [
+        ChatMessage(role="system", content="Base"),
+        ChatMessage(role="user", content="What day is it?"),
+    ]
+
+    before_midnight = ctx(messages)[0].content
+    assert "date: 2026-10-22 (Thursday)" in before_midnight
+    assert f"workspace: {ws_dir.resolve()}" in before_midnight
+    assert "time_zone: " in before_midnight
+    assert "os: " in before_midnight
+    assert 'Tool results arrive inside <untrusted id="…"> tags.' in before_midnight
+
+    current_dt = datetime(2026, 10, 23, 0, 1, tzinfo=timezone.utc)
+    after_midnight = ctx(messages)[0].content
+    assert "date: 2026-10-23 (Friday)" in after_midnight
+    assert "date: 2026-10-22 (Thursday)" not in after_midnight
 
 
 def test_build_context_performance_under_5ms_for_200_messages(
     aldwin_home: Path,
 ) -> None:
-    """TC-20: `build_context` completes in < 5 ms for a 200-message history."""
+    """`build_context` completes in < 5 ms for a 200-message history."""
     ensure_home(aldwin_home)
     ctx = build_context(aldwin_home, LimitsConfig())
 

@@ -56,7 +56,7 @@ def test_theme_formatters() -> None:
 
 
 def test_split_markdown_blocks_preserves_code_fences_with_blank_lines() -> None:
-    """Blank lines inside ``` or ~~~ fences never split the block (FR-6, TC-05)."""
+    """Blank lines inside ``` or ~~~ fences never split the block."""
     raw = (
         "First paragraph.\n\n"
         "```python\n"
@@ -82,7 +82,7 @@ def test_split_markdown_blocks_holds_unclosed_fence_in_remainder() -> None:
 
 
 def test_render_history_last_20_dimmed_with_divider() -> None:
-    """TC-03: 20 history messages render dimmed in order followed by divider."""
+    """20 history messages render dimmed in order followed by divider."""
     buf = io.StringIO()
     console = create_console(
         plain=False,
@@ -117,7 +117,7 @@ def test_render_history_last_20_dimmed_with_divider() -> None:
 
 
 def test_render_history_interrupted_notice_shown_once() -> None:
-    """TC-04: Interrupted flag shows the interrupted recovery notice once."""
+    """Interrupted flag shows the interrupted recovery notice once."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -136,7 +136,7 @@ def test_render_history_interrupted_notice_shown_once() -> None:
 
 
 def test_turn_renderer_streams_three_markdown_blocks_with_code_fence() -> None:
-    """TC-05: 3 markdown blocks incl. code fence print permanently in order once."""
+    """3 markdown blocks incl. code fence print permanently in order once."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -169,7 +169,7 @@ def test_turn_renderer_streams_three_markdown_blocks_with_code_fence() -> None:
 
 
 def test_turn_renderer_tool_call_and_result_cards() -> None:
-    """TC-06: tool_call and tool_result render ⚙, ✓, and ✗ cards with duration."""
+    """tool_call and tool_result render ⚙, ✓, and ✗ cards with duration."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -223,7 +223,7 @@ def test_turn_renderer_tool_call_and_result_cards() -> None:
 
 
 def test_render_error_codes_map_to_house_copy() -> None:
-    """TC-11: Every protocol ErrorCode renders its exact one-line copy and next step."""
+    """Every protocol ErrorCode renders its exact one-line copy and next step."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -250,7 +250,7 @@ def test_render_error_codes_map_to_house_copy() -> None:
 
 
 def test_plain_mode_has_no_ansi_spinner_live_or_bell() -> None:
-    """TC-12: Plain mode emits zero ANSI escape codes, spinner frames, or bell chars."""
+    """Plain mode emits zero ANSI escape codes, spinner frames, or bell chars."""
     buf = io.StringIO()
     console = create_console(plain=True, width=80, record=True, file=buf)
     renderer = ChatRenderer(console, plain=True)
@@ -296,7 +296,7 @@ def test_plain_mode_has_no_ansi_spinner_live_or_bell() -> None:
 
 
 def test_turn_renderer_status_ticker_retry_notice_and_max_steps() -> None:
-    """TC-21: Status line formats elapsed & tools; retry notice and max_steps render."""
+    """Status line formats elapsed & tools; retry notice and max_steps render."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -323,7 +323,7 @@ def test_turn_renderer_status_ticker_retry_notice_and_max_steps() -> None:
 
 
 def test_turn_renderer_flushes_narration_before_tool_card() -> None:
-    """TC-22: Buffered text before a tool call prints above the ⚙ tool card."""
+    """Buffered text before a tool call prints above the ⚙ tool card."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -349,7 +349,7 @@ def test_turn_renderer_flushes_narration_before_tool_card() -> None:
 
 
 def test_narrow_60_column_rendering() -> None:
-    """TC-25 (part 1): Panels and tool cards wrap cleanly within 60 columns."""
+    """Panels and tool cards wrap cleanly within 60 columns."""
     buf = io.StringIO()
     console = create_console(width=60, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -380,7 +380,7 @@ def test_narrow_60_column_rendering() -> None:
 
 
 def test_multiline_approval_panel_and_turn_close_cleanup() -> None:
-    """Multi-line approval detail places [y/n] on its own line; close() stops Live."""
+    """Multi-line approval detail places [N] no on its own line; close stops Live."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -396,7 +396,7 @@ def test_multiline_approval_panel_and_turn_close_cleanup() -> None:
     text = console.export_text()
     assert "Line one of new persona." in text
     assert "Line two of new persona." in text
-    assert "[y/n]" in text
+    assert "[N] no" in text
 
     turn = renderer.start_turn()
     assert turn._live is not None
@@ -481,7 +481,7 @@ def test_resolve_approval_collapses_to_one_line_and_list_paragraph_spacing() -> 
 
 
 def test_format_display_args_unwraps_truncated_json_fallback() -> None:
-    """TC-08: `format_display_args` unwraps truncated JSON strings without raw `{`."""
+    """`format_display_args` unwraps truncated JSON strings without raw `{`."""
     assert (
         format_display_args(
             '{"command": "echo alpha_beta_gamma_delta…',
@@ -499,7 +499,7 @@ def test_format_display_args_unwraps_truncated_json_fallback() -> None:
 
 
 def test_tool_result_80_cols_preserves_duration_and_summary() -> None:
-    """TC-09: 80-col tool result row caps `display_args` and keeps `duration`."""
+    """80-col tool result row caps `display_args` and keeps `duration`."""
     buf = io.StringIO()
     console = create_console(
         width=80,
@@ -567,3 +567,63 @@ def test_tool_result_80_cols_preserves_duration_and_summary() -> None:
     assert len(err_lines[0]) <= 80
     assert err_lines[0].startswith("  ✗ run_command  echo yyy")
     assert err_lines[0].endswith("exit 1")
+
+
+def test_approval_panel_strips_ansi_bidi_and_redacts_secrets() -> None:
+    """Panel `summary` and `detail` strip ANSI/bidi and redact secrets."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+
+    ev = ApprovalEvent(
+        re="r1",
+        approval_id="ap_san",
+        tool="run_command",
+        tier="ask",
+        summary="Edit \x1b[31mnotes\u202e.md",
+        detail="OPENAI_API_KEY=sk-1234567890abcdefghijklmno",
+        risky=["pipes into a shell", "network download"],
+    )
+    renderer.render_approval_panel(ev)
+    text = console.export_text()
+    assert "Edit notes.md" in text
+    assert "\u202e" not in text
+    assert "sk-1234567890" not in text
+    assert "OPENAI_API_KEY=‹redacted›" in text
+    assert "⚠ pipes into a shell · network download" in text
+
+
+def test_diff_approval_panel_folds_at_24_lines_and_expands() -> None:
+    """Diff approval panel folds after 24 lines and expands when requested."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+
+    diff_lines = ["--- a/notes.md", "+++ b/notes.md", "@@ -1,28 +1,28 @@"] + [
+        f"+added line {i}" if i % 2 == 0 else f"-removed line {i}" for i in range(1, 28)
+    ]
+    assert len(diff_lines) == 30
+    ev = ApprovalEvent(
+        re="r1",
+        approval_id="ap_diff",
+        tool="edit_file",
+        tier="diff",
+        summary="Edit notes.md",
+        detail="\n".join(diff_lines),
+        grantable=True,
+        grant_scope="file",
+    )
+
+    renderer.render_approval_panel(ev, expanded=False)
+    folded_text = console.export_text()
+    assert "… 6 more lines (ctrl+o to expand)" in folded_text
+    assert "+added line 26" not in folded_text
+    assert "[y] yes  [a] yes for this file this session  [N] no" in folded_text
+
+    buf_exp = io.StringIO()
+    console_exp = create_console(width=80, record=True, file=buf_exp)
+    renderer_exp = ChatRenderer(console_exp)
+    renderer_exp.render_approval_panel(ev, expanded=True)
+    expanded_text = console_exp.export_text()
+    assert "+added line 26" in expanded_text
+    assert "more lines (ctrl+o to expand)" not in expanded_text

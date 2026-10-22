@@ -297,7 +297,7 @@ def extract_readable_text(raw_bytes: bytes, content_type: str = "text/html") -> 
 
 
 def format_untrusted_page(final_url: str, text: str) -> str:
-    """Wrap extracted web text in the `<untrusted source="...">` container (`FR-3`)."""
+    """Wrap extracted web text in the `<untrusted source="...">` container."""
     safe_url = final_url.replace('"', "%22").replace("\n", "").replace("\r", "")
     safe_text = _CLOSING_UNTRUSTED_RE.sub("&lt;/untrusted&gt;", text)
     return (
@@ -349,6 +349,7 @@ class WebFetchTool(Tool):
         max_bytes: int = MAX_FETCH_BYTES,
         max_chars: int = MAX_FETCH_CHARS,
         max_redirects: int = MAX_REDIRECTS,
+        wrapped_by_policy: bool = False,
     ) -> None:
         self._client = client
         self._resolver = resolver
@@ -356,6 +357,7 @@ class WebFetchTool(Tool):
         self._max_bytes = max_bytes
         self._max_chars = max_chars
         self._max_redirects = max_redirects
+        self._wrapped_by_policy = wrapped_by_policy
 
     async def _download_with_redirects(
         self,
@@ -464,8 +466,10 @@ class WebFetchTool(Tool):
             content_type,
         )
         truncated = extracted[: self._max_chars]
-        wrapped = format_untrusted_page(final_url, truncated)
         summary = format_char_count_summary(len(truncated))
+        if self._wrapped_by_policy:
+            return ToolOutput(truncated, summary=summary, ok=True)
+        wrapped = format_untrusted_page(final_url, truncated)
         return ToolOutput(wrapped, summary=summary, ok=True)
 
 
@@ -477,8 +481,9 @@ def build_web_fetch_tool(
     max_bytes: int = MAX_FETCH_BYTES,
     max_chars: int = MAX_FETCH_CHARS,
     max_redirects: int = MAX_REDIRECTS,
+    wrapped_by_policy: bool = False,
 ) -> WebFetchTool:
-    """Construct the `WebFetchTool` (`FR-3`)."""
+    """Construct the `WebFetchTool`."""
     return WebFetchTool(
         client=client,
         resolver=resolver,
@@ -486,6 +491,7 @@ def build_web_fetch_tool(
         max_bytes=max_bytes,
         max_chars=max_chars,
         max_redirects=max_redirects,
+        wrapped_by_policy=wrapped_by_policy,
     )
 
 

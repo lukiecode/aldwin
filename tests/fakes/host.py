@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from pathlib import Path
 
 from aldwin.client import (
@@ -14,6 +14,8 @@ from aldwin.client import (
     SkillsReport,
     SkillSummary,
     ToolInfo,
+    WorkspaceSummary,
+    resolve_workspace_summary,
 )
 from aldwin.protocol import (
     ApprovalAnswer,
@@ -25,7 +27,7 @@ from aldwin.protocol import (
 
 
 class FakeHost:
-    """Scriptable host/client test double for the CLI (`FR-5`, `aldwin-testing`)."""
+    """Scriptable host/client test double for the CLI (``, `aldwin-testing`)."""
 
     def __init__(
         self,
@@ -50,10 +52,18 @@ class FakeHost:
         self.closed = False
         self.turns: list[str] = []
         self.approvals: list[tuple[str, ApprovalAnswer]] = []
+        self.approval_details: list[
+            tuple[str, ApprovalAnswer, str | None, str | None]
+        ] = []
         self.stop_calls = 0
         self.model_switches: list[str] = []
         self.new_conversations = 0
         self.requests: list[tuple[object, ...]] = []
+        self.custom_workspace = WorkspaceSummary(
+            root=Path("/tmp/ws"),
+            display_root="~/code/aldwin",
+            granted_folders=(),
+        )
 
         self._scripted_turns: list[list[Event]] = []
         self.hang_until_stopped = False
@@ -125,7 +135,7 @@ class FakeHost:
         ]
 
     def queue_turn(self, events: list[Event]) -> None:
-        """Append a scripted sequence of protocol events for the next `turn()` call."""
+        """Append a scripted sequence of protocol events for the next `turn` call."""
         self._scripted_turns.append(list(events))
 
     async def connect(self) -> DoneEvent:
@@ -137,7 +147,13 @@ class FakeHost:
         self.requests.append(("history", limit))
         return self.history_event
 
-    async def turn(self, text: str) -> AsyncGenerator[Event, None]:
+    async def turn(
+        self,
+        text: str,
+        *,
+        skills: Sequence[str] = (),
+    ) -> AsyncGenerator[Event, None]:
+        _ = skills
         self.turns.append(text)
         self.requests.append(("turn", text))
         self._stop_gate.clear()
@@ -166,8 +182,12 @@ class FakeHost:
         self,
         approval_id: str,
         answer: ApprovalAnswer,
+        *,
+        digest: str | None = None,
+        reason: str | None = None,
     ) -> DoneEvent | ErrorEvent:
         self.approvals.append((approval_id, answer))
+        self.approval_details.append((approval_id, answer, digest, reason))
         self.requests.append(("approve", approval_id, answer))
         return DoneEvent(re="req_approve", reason="ok")
 
@@ -203,6 +223,13 @@ class FakeHost:
 
     def tools_summary(self) -> list[ToolInfo]:
         return list(self.custom_tools)
+
+    def workspace_summary(self) -> WorkspaceSummary:
+        return self.custom_workspace
+
+    def set_workspace(self, new_root: Path | str) -> WorkspaceSummary:
+        self.custom_workspace = resolve_workspace_summary(new_root)
+        return self.custom_workspace
 
     async def close(self) -> None:
         self.closed = True

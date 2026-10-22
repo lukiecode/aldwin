@@ -1,4 +1,4 @@
-"""CliRunner tests for `aldwin`, `aldwin setup`, and `aldwin uninstall` (`FR-1`)."""
+"""CliRunner tests for `aldwin`, `aldwin setup`, and `aldwin uninstall`."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def test_cli_main_routes_to_chat_and_version(
     aldwin_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """TC-01: Bare `aldwin` routes to chat entry; `--version` prints version."""
+    """Bare `aldwin` routes to chat entry; `--version` prints version."""
     ver_res = runner.invoke(app, ["--version"])
     assert ver_res.exit_code == 0
     assert ver_res.output.strip() == f"aldwin {__version__}"
@@ -47,7 +47,7 @@ def test_cli_main_routes_to_chat_and_version(
 def test_uninstall_keeps_data_and_purge_requires_double_confirmation(
     aldwin_home: Path,
 ) -> None:
-    """TC-18: uninstall keeps data; --purge requires both y/n and folder name."""
+    """uninstall keeps data; --purge requires both y/n and folder name."""
     # Populate aldwin_home
     runner.invoke(app, [])
     assert aldwin_home.exists()
@@ -89,7 +89,7 @@ def test_setup_cli_command_end_to_end(
     aldwin_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """TC-17 (CLI integration): `aldwin setup` saves keys and model via CliRunner."""
+    """`aldwin setup` saves keys and model via CliRunner."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
 
@@ -115,7 +115,7 @@ def test_setup_cli_command_end_to_end(
 
 
 def test_non_tty_graceful_exit(aldwin_home: Path) -> None:
-    """TC-25 (part 2): Non-TTY invocation exits 0 cleanly with no traceback."""
+    """Non-TTY invocation exits 0 cleanly with no traceback."""
     res = runner.invoke(app, [])
     assert res.exit_code == 0
     assert "Traceback" not in res.output
@@ -169,9 +169,30 @@ async def test_launch_interactive_session_onboarding_and_chat(
 
 
 def test_cli_help_has_no_internal_ticket_tags() -> None:
-    """TC-13: `aldwin --help` describes `setup` and `uninstall` without `FR-1`."""
+    """`aldwin --help` describes `setup` and `uninstall` without ``."""
     res = runner.invoke(app, ["--help"])
     assert res.exit_code == 0
     assert "setup" in res.output
     assert "uninstall" in res.output
     assert "FR-1" not in res.output
+
+
+def test_cli_workspace_option_rejects_invalid_paths_with_exit_2(
+    aldwin_home: Path,
+) -> None:
+    """`aldwin --workspace` exits 2 on missing, `/`, `~`, or `~/.aldwin`."""
+    res_missing = runner.invoke(app, ["--workspace", "/nope"])
+    assert res_missing.exit_code == 2
+    assert "workspace not found: /nope" in res_missing.output
+
+    res_root = runner.invoke(app, ["--workspace", "/"])
+    assert res_root.exit_code == 2
+    assert "workspace too broad: /" in res_root.output
+
+    res_tilde = runner.invoke(app, ["--workspace", "~"])
+    assert res_tilde.exit_code == 2
+    assert "workspace too broad: ~" in res_tilde.output
+
+    res_home = runner.invoke(app, ["--workspace", str(aldwin_home)])
+    assert res_home.exit_code == 2
+    assert "workspace not allowed:" in res_home.output

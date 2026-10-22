@@ -12,6 +12,7 @@ from aldwin.client import (
     BootstrapResult,
     ClientBootstrapError,
     PlatformNotSupportedError,
+    WorkspaceError,
     bootstrap,
     get_onboarding_status,
     purge_home_data,
@@ -90,6 +91,11 @@ def main(
         "--debug",
         help="Write debug-level events to ~/.aldwin/logs/aldwin.log.",
     ),
+    workspace: str | None = typer.Option(
+        None,
+        "--workspace",
+        help="Set the workspace root directory for this session.",
+    ),
 ) -> None:
     """Launch Aldwin interactive chat (or run a subcommand)."""
     _ = version
@@ -97,7 +103,10 @@ def main(
         return
 
     try:
-        result = bootstrap(plain=plain, debug=debug)
+        result = bootstrap(plain=plain, debug=debug, workspace=workspace)
+    except WorkspaceError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
     except (PlatformNotSupportedError, ClientBootstrapError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from None

@@ -62,6 +62,13 @@ def aldwin_home(
     user_home = tmp_path / "user"
     user_home.mkdir(exist_ok=True)
     monkeypatch.setenv("HOME", str(user_home))
+    # Some sandboxes export TERM=dumb, NO_COLOR, and FORCE_COLOR=0.
+    # Rich then ignores an explicit width, drops styles, and treats the
+    # console as non-interactive. Tests that need plain mode set NO_COLOR
+    # themselves.
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("FORCE_COLOR", raising=False)
 
     home = tmp_path / "home"
     monkeypatch.setenv("ALDWIN_HOME", str(home))

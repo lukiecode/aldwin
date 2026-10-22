@@ -1,8 +1,9 @@
-"""Unit tests for `SlashCompleter` and slash command handlers (`FR-5`)."""
+"""Unit tests for `SlashCompleter` and slash command handlers."""
 
 from __future__ import annotations
 
 import io
+from pathlib import Path
 
 from fakes.host import FakeClient
 from prompt_toolkit.completion import CompleteEvent
@@ -18,7 +19,7 @@ async def _noop_prompt(_label: str) -> str:
 
 
 async def test_slash_model_numbered_list_and_switch() -> None:
-    """TC-10: /model prints numbered list, switches via number or direct name."""
+    """/model prints numbered list, switches via number or direct name."""
     client = FakeClient(
         model="gpt-4o",
         available_models=["gpt-4o", "gpt-4.1", "o3-mini"],
@@ -124,7 +125,7 @@ async def test_slash_model_numbered_list_and_switch() -> None:
 
 
 async def test_slash_unknown_command() -> None:
-    """TC-13: /unknown prints 'Unknown command. Type /help.' without starting a turn."""
+    """/unknown prints 'Unknown command. Type /help.' without starting a turn."""
     client = FakeClient()
     buf = io.StringIO()
     console = create_console(plain=True, width=80, record=True, file=buf)
@@ -142,7 +143,7 @@ async def test_slash_unknown_command() -> None:
 
 
 async def test_slash_completer_and_inspect_commands() -> None:
-    """TC-19: SlashCompleter yields commands with meta; inspect commands render."""
+    """SlashCompleter yields commands with meta; inspect commands render."""
     completer = SlashCompleter()
     all_items = list(completer.get_completions(Document("/"), CompleteEvent()))
     assert [c.text for c in all_items] == [cmd for cmd, _ in SLASH_COMMANDS]
@@ -196,3 +197,41 @@ async def test_slash_completer_and_inspect_commands() -> None:
     assert "✗ broken-skill (invalid: missing description)" in text
     assert "web_search" in text
     assert "run_command" in text and "always asks y/n" in text
+
+
+async def test_workspace_command_shows_and_switches_root_and_clears_grants(
+    tmp_path: Path,
+) -> None:
+    """`/workspace` prints workspace and `/workspace <path>` switches root."""
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir()
+
+    client = FakeClient()
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+
+    await handle_slash_command(
+        "/workspace",
+        client=client,
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    await handle_slash_command(
+        f"/workspace {notes_dir}",
+        client=client,
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    await handle_slash_command(
+        "/workspace /nonexistent_dir_xyz",
+        client=client,
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+
+    text = console.export_text()
+    assert "workspace: ~/code/aldwin" in text
+    assert "also allowed this session: (none)" in text
+    assert "session grants cleared" in text
+    assert "workspace not found: /nonexistent_dir_xyz" in text

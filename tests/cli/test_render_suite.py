@@ -184,7 +184,7 @@ def test_approval_panel_end_line_and_stopped_line() -> None:
     text = console.export_text()
     assert "Run this command?" in text
     assert "df -h" in text
-    assert "[y/n]" in text
+    assert "[N] no" in text
     assert "✓ done · 4s · 1 tool · 1.1k tokens" in text
     assert "Partial text before Esc (stopped)" in text
     assert "✓ done · 0s · 0 tools (stopped)" in text

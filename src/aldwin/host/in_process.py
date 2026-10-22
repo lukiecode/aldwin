@@ -9,7 +9,7 @@ import shutil
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
@@ -24,6 +24,7 @@ from aldwin.core.memory import (
     pop_profile_truncation_warning,
 )
 from aldwin.core.persona import PersonaSummary, persona_summary, persona_text
+from aldwin.core.policy import sanitize_display_text
 from aldwin.core.settings import (
     ConfigError,
     KeySource,
@@ -35,6 +36,13 @@ from aldwin.core.settings import (
     update_config_model,
 )
 from aldwin.core.tools import ToolInfo, list_builtin_tools
+from aldwin.core.workspace import (
+    Workspace,
+    WorkspaceError,
+    WorkspaceNotAllowedError,
+    WorkspaceNotFoundError,
+    format_outside_display,
+)
 
 if TYPE_CHECKING:
     from aldwin.client.client import AldwinClient
@@ -44,6 +52,15 @@ logger = logging.getLogger("aldwin.host")
 
 NewConversationHandler = Callable[[], Awaitable[None]]
 KeyCheckResult = Literal["ok", "invalid", "no_access", "network_error"]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceSummary:
+    """Active workspace root and session-approved folders for `/workspace`."""
+
+    root: Path
+    display_root: str
+    granted_folders: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +78,7 @@ class OnboardingStatus:
 
 @dataclass(frozen=True, slots=True)
 class SkillSummary:
-    """One valid skill entry returned for `/skills` (`FR-5`)."""
+    """One valid skill entry returned for `/skills`."""
 
     name: str
     description: str
@@ -69,7 +86,7 @@ class SkillSummary:
 
 @dataclass(frozen=True, slots=True)
 class InvalidSkillSummary:
-    """One invalid skill folder flagged for `/skills` (`FR-5`)."""
+    """One invalid skill folder flagged for `/skills`."""
 
     name: str
     display_path: str
@@ -78,7 +95,7 @@ class InvalidSkillSummary:
 
 @dataclass(frozen=True, slots=True)
 class SkillsReport:
-    """Installed valid skills and invalid skill folders for `/skills` (`FR-5`)."""
+    """Installed valid skills and invalid skill folders for `/skills`."""
 
     valid: tuple[SkillSummary, ...]
     invalid: tuple[InvalidSkillSummary, ...]
@@ -102,7 +119,7 @@ def get_onboarding_status(home: Path | None = None) -> OnboardingStatus:
 
 
 async def check_openai_key(api_key: str) -> KeyCheckResult:
-    """Validate an OpenAI API key via `aldwin.core.models.check_key` (`FR-2`)."""
+    """Validate an OpenAI API key via `aldwin.core.models.check_key`."""
     from aldwin.core.models import KeyStatus, check_key
 
     status = await check_key(api_key)
@@ -171,7 +188,7 @@ def save_setup(
 
 
 def get_skills_report(home: Path | None = None) -> SkillsReport:
-    """Load and validate skills in `~/.aldwin/skills/` for `/skills` (`FR-5`)."""
+    """Load and validate skills in `~/.aldwin/skills/` for `/skills`."""
     from aldwin.core.agent import SKILLS_SUBDIR, load_skills
 
     root = (home if home is not None else home_dir()).expanduser().resolve()
@@ -199,26 +216,40 @@ def purge_home_data(home: Path | None = None) -> Path:
 
 
 def get_memory_summary(home: Path | None = None) -> MemorySummary:
-    """Return profile and notes summary data for `/memory` (`FR-10`)."""
+    """Return profile and notes summary data for `/memory`."""
     root = (home if home is not None else home_dir()).expanduser().resolve()
     config = load_config(root)
     return memory_summary(root, config.limits)
 
 
 def get_persona_text(home: Path | None = None) -> str:
-    """Return the active `persona.md` text for `/persona` (`FR-10`)."""
+    """Return the active `persona.md` text for `/persona`."""
     return persona_text(home)
 
 
 def get_persona_summary(home: Path | None = None) -> PersonaSummary:
-    """Return path, text, and cap metadata for `/persona` (`FR-10`)."""
+    """Return path, text, and cap metadata for `/persona`."""
     root = (home if home is not None else home_dir()).expanduser().resolve()
     config = load_config(root)
     return persona_summary(root, cap=config.limits.persona_chars)
 
 
+def resolve_workspace_summary(
+    new_root: Path | str,
+    *,
+    home: Path | None = None,
+) -> WorkspaceSummary:
+    """Validate `new_root` and return a `WorkspaceSummary`."""
+    ws = Workspace(new_root, home=home)
+    return WorkspaceSummary(
+        root=ws.root,
+        display_root=ws.display_root,
+        granted_folders=(),
+    )
+
+
 def get_builtin_tools() -> list[ToolInfo]:
-    """Return one-line descriptions of the built-in tools for `/tools` (`FR-7`)."""
+    """Return one-line descriptions of the built-in tools for `/tools`."""
     return list_builtin_tools()
 
 
@@ -239,13 +270,29 @@ class BootstrapResult:
     created: bool
     model: str
     plain: bool
+    workspace: Path = field(default_factory=lambda: Path.cwd().resolve())
+    display_workspace: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.display_workspace:
+            object.__setattr__(
+                self,
+                "display_workspace",
+                format_outside_display(self.workspace),
+            )
 
 
-def bootstrap_host(*, plain: bool = False, debug: bool = False) -> BootstrapResult:
-    """Initialise the Aldwin home folder, rotating log, and configuration.
+def bootstrap_host(
+    *,
+    plain: bool = False,
+    debug: bool = False,
+    workspace: Path | str | None = None,
+) -> BootstrapResult:
+    """Initialise the Aldwin home folder, rotating log, configuration, and workspace.
 
-    Raises ``PlatformNotSupportedError`` on Windows and ``ClientBootstrapError``
-    when ``config.yaml`` is invalid.
+    Raises ``PlatformNotSupportedError`` on Windows, ``ClientBootstrapError``
+    when ``config.yaml`` is invalid, and ``WorkspaceError`` when an explicit
+    ``workspace`` path is missing or not allowed.
     """
     if sys.platform == "win32":
         raise PlatformNotSupportedError(
@@ -260,6 +307,19 @@ def bootstrap_host(*, plain: bool = False, debug: bool = False) -> BootstrapResu
         created = ensure_home(root)
         setup_logging(root, debug=debug)
 
+    if workspace is not None:
+        ws = Workspace(workspace, home=root)
+        ws_root = ws.root
+        ws_display = ws.display_root
+    else:
+        try:
+            ws = Workspace(Path.cwd(), home=root)
+            ws_root = ws.root
+            ws_display = ws.display_root
+        except WorkspaceError:
+            ws_root = Path.cwd().resolve()
+            ws_display = format_outside_display(ws_root)
+
     try:
         config = load_config(root)
     except ConfigError as exc:
@@ -271,8 +331,9 @@ def bootstrap_host(*, plain: bool = False, debug: bool = False) -> BootstrapResu
     )
 
     logger.info(
-        "aldwin.startup home=%s created=%s model=%s plain=%s",
+        "aldwin.startup home=%s workspace=%s created=%s model=%s plain=%s",
         root,
+        ws_root,
         created,
         config.model,
         effective_plain,
@@ -283,6 +344,8 @@ def bootstrap_host(*, plain: bool = False, debug: bool = False) -> BootstrapResu
         created=created,
         model=config.model,
         plain=effective_plain,
+        workspace=ws_root,
+        display_workspace=ws_display,
     )
 
 
@@ -346,6 +409,11 @@ class InProcessTransport:
         self._on_new_conversation = on_new_conversation
         self._closed = False
 
+    @property
+    def closed(self) -> bool:
+        """Return `True` if this transport has been closed."""
+        return self._closed
+
     def set_new_conversation_handler(self, handler: NewConversationHandler) -> None:
         """Register the host callback invoked when a client starts a new chat."""
         self._on_new_conversation = handler
@@ -399,6 +467,7 @@ async def open_in_process_client(
     *,
     initial_model: str | None = None,
     home: Path | None = None,
+    workspace: Path | str | None = None,
 ) -> AsyncIterator[AldwinClient]:
     """Start an in-process `AldwinHost` and yield a connected `AldwinClient`."""
     from aldwin.client.client import AldwinClient
@@ -412,6 +481,8 @@ async def open_in_process_client(
         transport=transport,
         session_store=store,
         initial_model=initial_model,
+        home=root,
+        workspace=workspace,
     )
     await host.start()
     client = AldwinClient(
@@ -419,6 +490,8 @@ async def open_in_process_client(
         model_getter=lambda: host.model,
         session_id_getter=lambda: host.stored_session.meta.id,
         updated_at_getter=lambda: host.stored_session.meta.updated_at,
+        workspace_getter=host.workspace_summary,
+        workspace_setter=host.set_workspace,
         home=root,
     )
     try:
@@ -445,6 +518,10 @@ __all__ = [
     "SkillSummary",
     "SkillsReport",
     "ToolInfo",
+    "WorkspaceError",
+    "WorkspaceNotAllowedError",
+    "WorkspaceNotFoundError",
+    "WorkspaceSummary",
     "bootstrap_host",
     "check_openai_key",
     "get_builtin_tools",
@@ -458,5 +535,7 @@ __all__ = [
     "open_in_process_client",
     "pop_profile_truncation_warning",
     "purge_home_data",
+    "resolve_workspace_summary",
+    "sanitize_display_text",
     "save_setup",
 ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import time
 from importlib.resources import files
 from pathlib import Path
 from typing import Final
@@ -15,6 +16,8 @@ HOME_ENV_VAR: Final[str] = "ALDWIN_HOME"
 DEFAULT_HOME_DIR: Final[str] = "~/.aldwin"
 DIR_MODE: Final[int] = 0o700
 FILE_MODE: Final[int] = 0o600
+TMP_RETENTION_DAYS: Final[int] = 7
+SECONDS_PER_DAY: Final[int] = 86_400
 
 SUBDIRS: Final[tuple[str, ...]] = (
     "skills",
@@ -22,6 +25,7 @@ SUBDIRS: Final[tuple[str, ...]] = (
     "memory",
     "memory/notes",
     "logs",
+    "tmp",
 )
 
 STARTER_ASSETS: Final[tuple[tuple[str, str], ...]] = (
@@ -149,7 +153,37 @@ def ensure_home(home: Path | None = None) -> bool:
     if secrets_path.exists():
         ensure_permissions(secrets_path, FILE_MODE)
 
+    cleanup_old_tmp_files(root / "tmp")
     return created_root
+
+
+def cleanup_old_tmp_files(
+    tmp_dir: Path,
+    *,
+    max_age_days: int = TMP_RETENTION_DAYS,
+    now: float | None = None,
+) -> int:
+    """Delete files in `tmp_dir` older than `max_age_days`."""
+    if not tmp_dir.is_dir():
+        return 0
+    current_time = time.time() if now is None else now
+    cutoff = current_time - (max_age_days * SECONDS_PER_DAY)
+    deleted = 0
+    try:
+        entries = list(tmp_dir.iterdir())
+    except OSError:
+        return 0
+
+    for entry in entries:
+        try:
+            if entry.is_file() or entry.is_symlink():
+                stat_res = entry.lstat()
+                if stat_res.st_mtime < cutoff:
+                    entry.unlink(missing_ok=True)
+                    deleted += 1
+        except OSError:
+            continue
+    return deleted
 
 
 def read_base_instructions() -> str:
