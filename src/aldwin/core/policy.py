@@ -1382,7 +1382,11 @@ class PolicyWrappedTool(Tool):
         policy = REGISTRY.get(inner.name)
         self.parallel_safe = policy.parallel_safe if policy is not None else False
         self._exec_timeout = inner.timeout
-        self.timeout = None
+        # Agentling applies `tool.timeout or agent.tool_timeout` around the
+        # *entire* `call()`, which includes waiting on Diff/Ask. A finite
+        # value here makes slow human approvals look like ToolTimeoutError
+        # (the 60s bug). Disable the outer timer; bound only `forward()`.
+        self.timeout = float("inf")
         self._raw_max_output_chars = (
             inner.max_output_chars
             if inner.max_output_chars is not None
@@ -1390,7 +1394,11 @@ class PolicyWrappedTool(Tool):
                 inner.name, DEFAULT_TOOL_OUTPUT_CAP
             )
         )
-        self.max_output_chars = None
+        # Same trap as timeout: `None` falls back to Agent.max_tool_output_chars,
+        # which runs `_truncate_middle` and turns `ToolOutput` into a plain str,
+        # dropping `.summary` so the CLI row shows `<untrusted …>` instead.
+        # Cap inside `trim_tool_output` only; leave Agentling's outer trim off.
+        self.max_output_chars = float("inf")
 
     @property
     def inner_tool(self) -> Tool:

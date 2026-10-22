@@ -182,8 +182,12 @@ def summarize_tool_result(
 
     for line in content.splitlines():
         stripped = line.strip()
-        if stripped:
-            return (not is_error), _shorten_summary(stripped)
+        if not stripped:
+            continue
+        # Never surface the untrusted wrapper as the CLI row summary.
+        if stripped.startswith("<untrusted ") or stripped.startswith("</untrusted"):
+            continue
+        return (not is_error), _shorten_summary(stripped)
     return (not is_error), ""
 
 

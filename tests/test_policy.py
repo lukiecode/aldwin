@@ -1335,6 +1335,83 @@ async def test_wrapped_command_saves_full_stdout(
     assert payload not in str(out)
 
 
+def test_policy_wrapped_disables_agentling_outer_trim() -> None:
+    """Wrapped tools must not let Agentling strip `ToolOutput.summary`."""
+    from aldwin.core.tools import ToolOutput
+
+    class _BigRead(Tool):
+        name = "read_file"
+        description = "Read"
+        parameters: dict[str, Any] = {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        }
+        max_output_chars = 4_000
+
+        async def forward(self, path: str) -> ToolOutput:  # type: ignore[override]
+            return ToolOutput("x" * 20_000, summary=f"Read {path} · lines 1–1 of 1")
+
+    # Build wrapper without a real session ask path — only inspect caps.
+    from unittest.mock import MagicMock
+
+    session = MagicMock()
+    wrapped = PolicyWrappedTool(
+        _BigRead(),
+        session=session,
+        ask=MagicMock(),
+    )
+    assert wrapped.timeout == float("inf")
+    assert wrapped.max_output_chars == float("inf")
+
+
+async def test_policy_wrapped_approval_wait_ignores_agent_tool_timeout(
+    policy_session: PolicySession,
+) -> None:
+    """Human Diff/Ask time must not trip Agentling's outer `tool_timeout`."""
+    import asyncio
+
+    from agentling import Agent, ToolResultEvent
+    from fakes.model import FakeModel, FakeTurn
+
+    note = policy_session.workspace.root / "notes.md"
+    note.write_text("old\n", encoding="utf-8")
+    policy_session.mark_read("notes.md")
+
+    async def _slow_yes(_req: ApprovalRequest) -> ApprovalAnswer:
+        await asyncio.sleep(0.2)
+        return ApprovalAnswer("yes", "user")
+
+    wrapped = PolicyWrappedTool(
+        _DummyEditTool(policy_session.workspace),
+        session=policy_session,
+        ask=_slow_yes,
+    )
+    assert wrapped.timeout == float("inf")
+
+    model = FakeModel(
+        turns=[
+            FakeTurn.tool_call(
+                "edit_file",
+                {"path": "notes.md", "content": "new\n"},
+                call_id="c1",
+            ),
+            FakeTurn.text(["done"]),
+        ]
+    )
+    agent = Agent(model=model, tools=[wrapped], tool_timeout=0.05)
+    session = agent.start()
+    results = [
+        ev.result
+        async for ev in session.run("edit", stream=True, reset=False)
+        if isinstance(ev, ToolResultEvent)
+    ]
+    assert len(results) == 1
+    assert results[0].is_error is False
+    assert "ToolTimeoutError" not in results[0].content
+    assert note.read_text(encoding="utf-8") == "new\n"
+
+
 def test_decide_stays_cheap(policy_session: PolicySession) -> None:
     """`policy.decide` stays under 5 ms per call on average.
 
