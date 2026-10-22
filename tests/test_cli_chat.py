@@ -8,7 +8,9 @@ import time
 from pathlib import Path
 
 from fakes.host import FakeClient
+from prompt_toolkit.input import Input
 from prompt_toolkit.input.defaults import create_pipe_input
+from rich.console import Console
 
 from aldwin.cli.chat_screen import (
     TurnKeyListener,
@@ -18,7 +20,7 @@ from aldwin.cli.chat_screen import (
     run_chat,
 )
 from aldwin.cli.theme import PLAIN_PROMPT_STYLE, create_console
-from aldwin.client import bootstrap
+from aldwin.client import BootstrapResult, bootstrap
 from aldwin.protocol import (
     ApprovalEvent,
     DoneEvent,
@@ -27,6 +29,26 @@ from aldwin.protocol import (
     ToolCallEvent,
     ToolResultEvent,
 )
+
+_CHAT_TIMEOUT_S = 10
+
+
+async def _run_chat(
+    boot: BootstrapResult,
+    *,
+    client: FakeClient,
+    console: Console,
+    input_dev: Input,
+) -> int:
+    """Run one chat session, and fail the test if it never returns.
+
+    A missed pipe wakeup used to block ``prompt_async`` until the CI job was
+    killed, which looks like a stuck pytest step.
+    """
+    return await asyncio.wait_for(
+        run_chat(boot, client=client, console=console, input_dev=input_dev),
+        timeout=_CHAT_TIMEOUT_S,
+    )
 
 
 async def test_chat_approval_yes_sends_approve_and_resumes(aldwin_home: Path) -> None:
@@ -78,7 +100,7 @@ async def test_chat_approval_yes_sends_approve_and_resumes(aldwin_home: Path) ->
             pipe_in.send_text("/exit\r")
 
         feeder = asyncio.create_task(_send_approval_and_exit())
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,
@@ -142,7 +164,7 @@ async def test_escape_during_stream_stops_under_one_second(aldwin_home: Path) ->
             pipe_in.send_text("/exit\r")
 
         feeder = asyncio.create_task(_press_esc_then_exit())
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,
@@ -179,7 +201,7 @@ async def test_prompt_input_bindings_empty_ignored_and_toolbar(
         pipe_in.send_text("   \r")
         pipe_in.send_text("line1\x1b\rline2\r")
         pipe_in.send_text("/exit\r")
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,
@@ -236,7 +258,7 @@ async def test_ctrl_c_once_warns_twice_quits_and_ctrl_d_saves_and_exits(
     with create_pipe_input() as pipe_a:
         pipe_a.send_text("\x03")
         pipe_a.send_text("\x03")
-        rc_a = await run_chat(
+        rc_a = await _run_chat(
             boot,
             client=client_a,
             console=console_a,
@@ -254,7 +276,7 @@ async def test_ctrl_c_once_warns_twice_quits_and_ctrl_d_saves_and_exits(
     console_b = create_console(plain=True, width=80, record=True, file=buf_b)
     with create_pipe_input() as pipe_b:
         pipe_b.send_text("\x04")
-        rc_b = await run_chat(
+        rc_b = await _run_chat(
             boot,
             client=client_b,
             console=console_b,
@@ -285,7 +307,7 @@ async def test_chat_slash_command_status_and_error_events(aldwin_home: Path) -> 
         pipe_in.send_text("/help\r")
         pipe_in.send_text("trigger retry and error\r")
         pipe_in.send_text("/exit\r")
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,
@@ -323,7 +345,7 @@ async def test_ctrl_c_during_turn_stops_then_second_ctrl_c_quits(
             pipe_in.send_text("\x03")
 
         feeder = asyncio.create_task(_send_ctrl_c_twice())
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,
@@ -421,7 +443,7 @@ async def test_approval_keys_default_no_ctrl_o_session_grant_and_decline_reason(
             pipe_in.send_text("/exit\r")
 
         feeder = asyncio.create_task(_decline_with_reason())
-        rc = await run_chat(
+        rc = await _run_chat(
             boot,
             client=client,
             console=console,

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import select
 import sys
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from contextlib import AbstractAsyncContextManager, ExitStack, contextmanager
 from pathlib import Path
+from types import TracebackType
 from typing import Final, Protocol
 
 from prompt_toolkit import PromptSession
@@ -54,6 +56,56 @@ from aldwin.protocol import (
 )
 
 ESCAPE_FLUSH_DELAY: Final[float] = 0.05
+
+
+def _wake_pending_pipe_input(input_dev: Input) -> None:
+    """Drain a pipe that already holds bytes when a reader attaches.
+
+    ``add_reader`` wakes up when a pipe *becomes* readable. The chat tests write
+    the first line before the prompt is listening, so those bytes are already
+    in the pipe. A busy CI runner can miss that, and ``prompt_async`` then
+    waits until the job is killed. If ``select`` can see the bytes, schedule
+    one read as soon as the reader attaches.
+    """
+    if not isinstance(input_dev, PipeInput):
+        return
+    if getattr(input_dev, "_aldwin_wakes_pending", False):
+        return
+
+    original_attach = input_dev.attach
+
+    def attach(callback: Callable[[], None]):
+        context = original_attach(callback)
+
+        class _DrainOnEnter:
+            def __enter__(self) -> None:
+                context.__enter__()
+                try:
+                    fd = input_dev.fileno()
+                    ready, _, _ = select.select([fd], [], [], 0)
+                except (OSError, ValueError):
+                    return
+                if not ready:
+                    return
+                try:
+                    asyncio.get_running_loop().call_soon(callback)
+                except RuntimeError:
+                    return
+
+            def __exit__(
+                self,
+                exc_type: type[BaseException] | None,
+                exc: BaseException | None,
+                tb: TracebackType | None,
+            ) -> bool | None:
+                return context.__exit__(exc_type, exc, tb)
+
+        return _DrainOnEnter()
+
+    setattr(input_dev, "attach", attach)
+    setattr(input_dev, "_aldwin_wakes_pending", True)
+
+
 CTRL_C_QUIT_WINDOW: Final[float] = 2.0
 DECLINE_REASON_PROMPT: Final[str] = (
     "Tell Aldwin why or what to do instead (Enter to skip): "
@@ -451,6 +503,7 @@ async def _chat_loop(
     owns_input: bool,
     skip_welcome: bool = False,
 ) -> int:
+    _wake_pending_pipe_input(input_dev)
     console = renderer.console
     last_context_tokens = 0
     last_ctrl_c_at = 0.0
