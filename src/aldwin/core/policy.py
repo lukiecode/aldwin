@@ -1275,6 +1275,16 @@ def trim_tool_output(
     return f"{body}{footer}", updated_summary
 
 
+def _tool_call_error_summary(message: str, *, limit: int = 120) -> str:
+    """Collapse a `ToolCallError` message to one row-summary line."""
+    collapsed = " ".join(message.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    if limit <= 1:
+        return collapsed[:limit]
+    return f"{collapsed[: limit - 1]}…"
+
+
 def format_denial_text(
     decision: Decision,
     *,
@@ -1552,7 +1562,16 @@ class PolicyWrappedTool(Tool):
                 target_str=target_str,
             )
 
-        preview = self._build_preview(arguments, decision, primary_path)
+        try:
+            preview = self._build_preview(arguments, decision, primary_path)
+        except ToolCallError as exc:
+            message = str(exc)
+            return PreApprovedOutcome(
+                decision=decision,
+                target_str=target_str,
+                denied_text=message,
+                denied_summary=_tool_call_error_summary(message),
+            )
         digest = compute_digest(self.name, resolved_args, preview.detail)
         req = ApprovalRequest(
             tool=self.name,
@@ -1685,6 +1704,14 @@ class PolicyWrappedTool(Tool):
             if not recheck_ok and recheck_out is not None:
                 return recheck_out
 
+        except ToolCallError as exc:
+            message = str(exc)
+            return ToolOutput(
+                message,
+                summary=_tool_call_error_summary(message),
+                ok=False,
+                duration_ms=0,
+            )
         except Exception as exc:
             logger.exception(
                 "Policy pipeline error in tool %r", self.name, exc_info=exc
@@ -1775,7 +1802,16 @@ class PolicyWrappedTool(Tool):
         if decision.kind not in ("ask", "diff") and decision.source != "grant":
             return True, None
 
-        current_preview = self._build_preview(arguments, decision, primary_path)
+        try:
+            current_preview = self._build_preview(arguments, decision, primary_path)
+        except ToolCallError as exc:
+            message = str(exc)
+            return False, ToolOutput(
+                message,
+                summary=_tool_call_error_summary(message),
+                ok=False,
+                duration_ms=0,
+            )
         current_digest = compute_digest(
             self.name,
             resolved_args,
@@ -1836,7 +1872,16 @@ class PolicyWrappedTool(Tool):
                 duration_ms=0,
             )
 
-        second_preview = self._build_preview(arguments, decision, primary_path)
+        try:
+            second_preview = self._build_preview(arguments, decision, primary_path)
+        except ToolCallError as exc:
+            message = str(exc)
+            return False, ToolOutput(
+                message,
+                summary=_tool_call_error_summary(message),
+                ok=False,
+                duration_ms=0,
+            )
         second_digest = compute_digest(
             self.name,
             resolved_args,

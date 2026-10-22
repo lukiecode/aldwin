@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from agentling import Tool
+from agentling.tools import ToolCallError
 
 from aldwin.core.approval_log import ApprovalLogger
 from aldwin.core.home import ensure_home
@@ -579,6 +580,42 @@ def test_clean_env_and_config_env_allow(
         in r.message
         for r in caplog.records
     )
+
+
+async def test_tool_call_error_from_prepare_skips_ask(
+    policy_session: PolicySession,
+    aldwin_home: Path,
+) -> None:
+    """`ToolCallError` from `prepare_approval` returns the message without asking."""
+    note_path = policy_session.workspace.root / "a.md"
+    note_path.write_text("hello", encoding="utf-8")
+
+    class _RaiseOnPrepare(_DummyEditTool):
+        def prepare_approval(self, path: str, content: str) -> ApprovalPreview:
+            raise ToolCallError("read the file first: a.md")
+
+    asks: list[ApprovalRequest] = []
+
+    async def _ask(req: ApprovalRequest) -> ApprovalAnswer:
+        asks.append(req)
+        return ApprovalAnswer("yes", "user")
+
+    denials_before = policy_session.turn_denials
+    wrapped = PolicyWrappedTool(
+        _RaiseOnPrepare(policy_session.workspace),
+        session=policy_session,
+        ask=_ask,
+        approval_log=ApprovalLogger(home=aldwin_home),
+    )
+    out = await wrapped.call({"path": "a.md", "content": "world"})
+
+    assert out.ok is False
+    assert str(out) == "read the file first: a.md"
+    assert out.summary == "read the file first: a.md"
+    assert asks == []
+    assert policy_session.turn_denials == denials_before
+    assert str(out) != DENIAL_TEXT["policy_error"]
+    assert note_path.read_text(encoding="utf-8") == "hello"
 
 
 async def test_diff_grants_non_grantable_yes_session_mtime_recheck_and_user_reason(

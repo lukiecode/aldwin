@@ -846,12 +846,16 @@ def test_tc47_registration_and_catalog(
     by_name = {tool.name: tool for tool in built}
     for name in ("list_dir", "glob", "grep", "read_file"):
         assert by_name[name].parallel_safe is True
+    for name in ("edit_file", "write_file"):
+        assert by_name[name].parallel_safe is False
     catalog = list_builtin_tools()
     assert [item.name for item in catalog].count("read_file") == 1
-    assert len(catalog) == 10
+    assert len(catalog) == 12
     for item in catalog:
         if item.name in {"list_dir", "glob", "grep", "read_file"}:
             assert item.requires_approval is False
+        if item.name in {"edit_file", "write_file"}:
+            assert item.requires_approval is True
 
     async def _allow(_summary: str, _detail: str = "") -> bool:
         return True
@@ -861,12 +865,22 @@ def test_tc47_registration_and_catalog(
     loaded = load_skills(aldwin_home / "skills")
     assert any(item.name == "read_file" for item in loaded.invalid)
     instructions = load_base_instructions()
-    for name in ("list_dir", "glob", "grep", "read_file"):
+    for name in (
+        "list_dir",
+        "glob",
+        "grep",
+        "read_file",
+        "edit_file",
+        "write_file",
+    ):
         assert name in instructions
     source = Path("src/aldwin/core/tools/files.py").read_text(encoding="utf-8")
     assert "aldwin.cli" not in source
     assert "<untrusted" not in source
     assert "approvals.jsonl" not in source
+    edits_source = Path("src/aldwin/core/tools/edits.py").read_text(encoding="utf-8")
+    assert "aldwin.cli" not in edits_source
+    assert "<untrusted" not in edits_source
     for path in Path("src/aldwin/cli").rglob("*.py"):
         assert "aldwin.core" not in path.read_text(encoding="utf-8")
 

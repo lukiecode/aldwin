@@ -118,6 +118,8 @@ def row_summary(running: str, summary: str, *, ok: bool) -> str:
         return summary
     if summary == "declined":
         return f"{running} · declined"
+    if summary == "not run: no approver":
+        return f"{running} · not run: no one to approve"
     if summary == "blocked: pattern":
         return f"{running} · blocked: pattern must stay inside the search folder"
     if summary.startswith("blocked:") and "secret" in summary:

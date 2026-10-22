@@ -145,6 +145,16 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
         description="Read a text file and return numbered lines.",
         requires_approval=False,
     ),
+    ToolInfo(
+        name="edit_file",
+        description="Replace a unique exact string in a file after diff approval.",
+        requires_approval=True,
+    ),
+    ToolInfo(
+        name="write_file",
+        description="Create or overwrite a text file after diff approval.",
+        requires_approval=True,
+    ),
 )
 
 
