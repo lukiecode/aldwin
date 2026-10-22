@@ -658,7 +658,7 @@ def test_diff_approval_clips_long_lines_until_expanded() -> None:
     assert "long lines truncated (ctrl+o to expand)" in folded
     assert marker not in folded
 
-    # Inspect the expanded panel renderable directly — export_text can
+    # Inspect the expanded panel renderable directly. export_text can
     # ellipsize tall panels in some CI terminals.
     exp_console = create_console(width=60, force_terminal=True)
     panel = ChatRenderer(exp_console).build_approval_panel(ev, expanded=True)

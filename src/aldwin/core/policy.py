@@ -1398,7 +1398,7 @@ class PolicyWrappedTool(Tool):
         # which runs `_truncate_middle` and turns `ToolOutput` into a plain str,
         # dropping `.summary` so the CLI row shows `<untrusted …>` instead.
         # Cap inside `trim_tool_output` only; leave Agentling's outer trim off.
-        self.max_output_chars = float("inf")
+        self.max_output_chars = 1_000_000_000
 
     @property
     def inner_tool(self) -> Tool:

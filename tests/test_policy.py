@@ -1352,7 +1352,7 @@ def test_policy_wrapped_disables_agentling_outer_trim() -> None:
         async def forward(self, path: str) -> ToolOutput:  # type: ignore[override]
             return ToolOutput("x" * 20_000, summary=f"Read {path} · lines 1–1 of 1")
 
-    # Build wrapper without a real session ask path — only inspect caps.
+    # Build wrapper without a real session ask path; only inspect caps.
     from unittest.mock import MagicMock
 
     session = MagicMock()
@@ -1362,7 +1362,7 @@ def test_policy_wrapped_disables_agentling_outer_trim() -> None:
         ask=MagicMock(),
     )
     assert wrapped.timeout == float("inf")
-    assert wrapped.max_output_chars == float("inf")
+    assert wrapped.max_output_chars == 1_000_000_000
 
 
 async def test_policy_wrapped_approval_wait_ignores_agent_tool_timeout(

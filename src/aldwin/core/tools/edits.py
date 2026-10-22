@@ -116,8 +116,8 @@ def atomic_write_workspace(
     """Write `data` to `path` via temp file, fsync, optional `copymode`, and replace.
 
     The caller creates parent directories. On any failure the temp file is removed and
-    the original target (if any) is left untouched. Custom xattrs/ACLs are not
-    preserved on macOS after `os.replace` (known 0.0.2 limit).
+    the original target (if any) is left untouched. Custom xattrs and ACLs are not
+    copied across `os.replace` on macOS APFS.
     """
     parent = path.parent
     tmp_path = parent / f".{path.name}.aldwin-tmp"

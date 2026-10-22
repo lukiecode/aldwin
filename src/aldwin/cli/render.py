@@ -387,14 +387,12 @@ class ChatRenderer:
 
             diff_parts: list[RenderableType] = []
             if risky_labels:
-                diff_parts.append(
-                    Text(f"⚠ {' · '.join(risky_labels)}", style="warn")
-                )
+                diff_parts.append(Text(f"⚠ {' · '.join(risky_labels)}", style="warn"))
             truncated_long = 0
             for line in shown_lines:
                 style = _diff_line_style(line, plain=self.plain)
                 # Folded: clip long lines so the panel stays scannable.
-                # Expanded: hard-wrap ourselves — Rich Panel + soft-wrap can
+                # Expanded: hard-wrap ourselves. Rich Panel soft-wrap can
                 # collapse a tall Group to one ellipsized row in some terminals.
                 if not expanded and len(line) > inner_width:
                     truncated_long += 1

@@ -140,7 +140,7 @@ def test_atomic_write_cleans_temp_on_failure(
     assert leftovers == []
 
 
-async def test_tc01_edit_without_read(edits: SimpleNamespace) -> None:
+async def test_edit_without_prior_read(edits: SimpleNamespace) -> None:
     path = edits.root / "notes" / "plan.md"
     _write(path, "draft\n")
     out = await edits.tools["edit_file"].call(
@@ -152,7 +152,7 @@ async def test_tc01_edit_without_read(edits: SimpleNamespace) -> None:
     assert path.read_text(encoding="utf-8") == "draft\n"
 
 
-async def test_tc02_unique_edit_yes(edits: SimpleNamespace) -> None:
+async def test_unique_edit_approved(edits: SimpleNamespace) -> None:
     path = edits.root / "notes.md"
     _write(path, "You will recieve a key.\n")
     await _mark_read(edits, "notes.md")
@@ -184,7 +184,7 @@ async def test_tc02_unique_edit_yes(edits: SimpleNamespace) -> None:
     assert edit_lines[-1]["answer"] == "yes"
 
 
-async def test_tc03_old_matches_three_times(edits: SimpleNamespace) -> None:
+async def test_edit_old_matches_three_times(edits: SimpleNamespace) -> None:
     path = edits.root / "a.md"
     _write(path, "x\nfoo\ny\nfoo\nz\nfoo\n")
     await _mark_read(edits, "a.md")
@@ -197,7 +197,7 @@ async def test_tc03_old_matches_three_times(edits: SimpleNamespace) -> None:
     assert path.read_text(encoding="utf-8") == "x\nfoo\ny\nfoo\nz\nfoo\n"
 
 
-async def test_tc04_old_matches_zero(edits: SimpleNamespace) -> None:
+async def test_edit_old_matches_zero(edits: SimpleNamespace) -> None:
     _write(edits.root / "a.md", "alpha\nbeta\ngamma\n")
     await _mark_read(edits, "a.md")
     out = await edits.tools["edit_file"].call(
@@ -209,7 +209,7 @@ async def test_tc04_old_matches_zero(edits: SimpleNamespace) -> None:
     assert edits.asks == []
 
 
-async def test_tc05_mtime_changed_after_read(edits: SimpleNamespace) -> None:
+async def test_edit_refuses_stale_mtime(edits: SimpleNamespace) -> None:
     path = edits.root / "a.md"
     _write(path, "hello\n")
     await _mark_read(edits, "a.md")
@@ -222,7 +222,7 @@ async def test_tc05_mtime_changed_after_read(edits: SimpleNamespace) -> None:
     assert edits.asks == []
 
 
-async def test_tc06_and_tc21_decline_with_reason(edits: SimpleNamespace) -> None:
+async def test_edit_decline_includes_user_reason(edits: SimpleNamespace) -> None:
     path = edits.root / "a.md"
     _write(path, "colour\n")
     await _mark_read(edits, "a.md")
@@ -240,7 +240,7 @@ async def test_tc06_and_tc21_decline_with_reason(edits: SimpleNamespace) -> None
     assert path.read_text(encoding="utf-8") == "colour\n"
 
 
-async def test_tc07_write_creates_parent(edits: SimpleNamespace) -> None:
+async def test_write_creates_missing_parents(edits: SimpleNamespace) -> None:
     out = await edits.tools["write_file"].call(
         {
             "path": "out/notes.md",
@@ -259,7 +259,7 @@ async def test_tc07_write_creates_parent(edits: SimpleNamespace) -> None:
     assert out.summary == "Write out/notes.md · created, 14 lines"
 
 
-async def test_tc08_content_too_large(edits: SimpleNamespace) -> None:
+async def test_write_rejects_oversized_content(edits: SimpleNamespace) -> None:
     content = "x" * (1_048_576 + 1)
     out = await edits.tools["write_file"].call({"path": "big.md", "content": content})
     assert out.ok is False
@@ -268,7 +268,7 @@ async def test_tc08_content_too_large(edits: SimpleNamespace) -> None:
     assert not (edits.root / "big.md").exists()
 
 
-async def test_tc09_outside_workspace_never_grantable(edits: SimpleNamespace) -> None:
+async def test_outside_workspace_edit_never_grantable(edits: SimpleNamespace) -> None:
     outside = edits.tmp / "outside.txt"
     out1 = await edits.tools["write_file"].call(
         {"path": str(outside), "content": "one\n"}
@@ -287,7 +287,7 @@ async def test_tc09_outside_workspace_never_grantable(edits: SimpleNamespace) ->
     assert edits.asks[1].grantable is False
 
 
-async def test_tc10_blocked_env(edits: SimpleNamespace) -> None:
+async def test_edit_blocked_env_file(edits: SimpleNamespace) -> None:
     _write(edits.root / ".env", "SECRET=1\n")
     out = await edits.tools["edit_file"].call(
         {"path": ".env", "old": "SECRET=1", "new": "SECRET=2"}
@@ -298,7 +298,7 @@ async def test_tc10_blocked_env(edits: SimpleNamespace) -> None:
     assert (edits.root / ".env").read_text(encoding="utf-8") == "SECRET=1\n"
 
 
-async def test_tc12_crlf_preserved(edits: SimpleNamespace) -> None:
+async def test_edit_preserves_crlf(edits: SimpleNamespace) -> None:
     path = edits.root / "win.txt"
     path.write_bytes(b"hello\r\nworld\r\n")
     await _mark_read(edits, "win.txt")
@@ -309,7 +309,7 @@ async def test_tc12_crlf_preserved(edits: SimpleNamespace) -> None:
     assert path.read_bytes() == b"hi\r\nworld\r\n"
 
 
-async def test_tc13_replace_failure(
+async def test_atomic_replace_failure_leaves_original(
     edits: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = edits.root / "a.md"
@@ -329,7 +329,7 @@ async def test_tc13_replace_failure(
     assert list(edits.root.glob(".a.md.aldwin-tmp")) == []
 
 
-async def test_tc14_yes_session_second_edit(edits: SimpleNamespace) -> None:
+async def test_yes_session_skips_second_ask(edits: SimpleNamespace) -> None:
     path = edits.root / "a.md"
     _write(path, "one\n")
     await _mark_read(edits, "a.md")
@@ -354,7 +354,7 @@ async def test_tc14_yes_session_second_edit(edits: SimpleNamespace) -> None:
     assert any(row.get("source") == "grant" for row in rows)
 
 
-async def test_tc16_build_file_never_grantable(edits: SimpleNamespace) -> None:
+async def test_build_file_edit_never_grantable(edits: SimpleNamespace) -> None:
     path = edits.root / "pyproject.toml"
     _write(path, "[project]\nname='x'\n")
     await _mark_read(edits, "pyproject.toml")
@@ -371,7 +371,7 @@ async def test_tc16_build_file_never_grantable(edits: SimpleNamespace) -> None:
     assert len(edits.asks) == 2
 
 
-async def test_tc17_git_write_blocked(edits: SimpleNamespace) -> None:
+async def test_git_path_write_blocked(edits: SimpleNamespace) -> None:
     out = await edits.tools["write_file"].call(
         {"path": ".git/hooks/pre-commit", "content": "#!/bin/sh\n"}
     )
@@ -381,7 +381,12 @@ async def test_tc17_git_write_blocked(edits: SimpleNamespace) -> None:
     assert not (edits.root / ".git" / "hooks" / "pre-commit").exists()
 
 
-async def test_tc18_mtime_change_after_yes_reasks(edits: SimpleNamespace) -> None:
+async def test_mtime_change_after_yes_fails_closed(edits: SimpleNamespace) -> None:
+    """External edit after yes: recheck prepare hits read-before-write and soft-fails.
+
+    Recheck never reaches a second ask because `_require_read` compares the
+    session read mtime before a new Diff preview can be built.
+    """
     path = edits.root / "a.md"
     _write(path, "v1\n")
     await _mark_read(edits, "a.md")
@@ -389,8 +394,7 @@ async def test_tc18_mtime_change_after_yes_reasks(edits: SimpleNamespace) -> Non
 
     async def mutating_ask(req: ApprovalRequest) -> ApprovalAnswer:
         asks.append(req)
-        if len(asks) == 1:
-            path.write_text("v1-changed\n", encoding="utf-8")
+        path.write_text("v1-changed\n", encoding="utf-8")
         return ApprovalAnswer("yes", "user")
 
     wrapped = wrap_tools_with_policy(
@@ -404,18 +408,13 @@ async def test_tc18_mtime_change_after_yes_reasks(edits: SimpleNamespace) -> Non
     )
     tools = {tool.name: tool for tool in wrapped}
     out = await tools["edit_file"].call({"path": "a.md", "old": "v1", "new": "v2"})
-    assert len(asks) >= 1
-    if out.ok:
-        assert len(asks) >= 2
-    else:
-        assert (
-            "changed" in str(out).lower()
-            or "match" in str(out).lower()
-            or DENIAL_TEXT["policy_error"] in str(out)
-        )
+    assert len(asks) == 1
+    assert out.ok is False
+    assert str(out) == "file changed since last read; read it again"
+    assert path.read_text(encoding="utf-8") == "v1-changed\n"
 
 
-async def test_tc19_new_file_digest_covers_all_lines(edits: SimpleNamespace) -> None:
+async def test_new_file_digest_covers_all_lines(edits: SimpleNamespace) -> None:
     content = "\n".join(f"line {i}" for i in range(200)) + "\n"
     out = await edits.tools["write_file"].call({"path": "new.md", "content": content})
     assert out.ok is True
@@ -431,7 +430,7 @@ async def test_tc19_new_file_digest_covers_all_lines(edits: SimpleNamespace) -> 
     assert digest.startswith("sha256:")
 
 
-async def test_tc20_symlink_into_ssh_blocked(edits: SimpleNamespace) -> None:
+async def test_symlink_into_ssh_write_blocked(edits: SimpleNamespace) -> None:
     ssh = edits.tmp / ".ssh"
     ssh.mkdir()
     (ssh / "id_rsa").write_text("key", encoding="utf-8")
@@ -445,7 +444,7 @@ async def test_tc20_symlink_into_ssh_blocked(edits: SimpleNamespace) -> None:
     assert not (ssh / "stolen.txt").exists()
 
 
-async def test_tc22_workspace_switch_clears_grants(edits: SimpleNamespace) -> None:
+async def test_workspace_switch_clears_file_grants(edits: SimpleNamespace) -> None:
     path = edits.root / "notes.md"
     _write(path, "a\n")
     await _mark_read(edits, "notes.md")
@@ -469,7 +468,7 @@ async def test_tc22_workspace_switch_clears_grants(edits: SimpleNamespace) -> No
     assert len(edits.asks) == 2
 
 
-async def test_tc23_file_keeps_ansi_and_bidi(edits: SimpleNamespace) -> None:
+async def test_written_file_keeps_ansi_and_bidi(edits: SimpleNamespace) -> None:
     path = edits.root / "a.md"
     old = "plain"
     new = "\x1b[31mred\x1b[0m\u202ewrecked"
@@ -480,7 +479,7 @@ async def test_tc23_file_keeps_ansi_and_bidi(edits: SimpleNamespace) -> None:
     assert path.read_text(encoding="utf-8") == f"{new}\n"
 
 
-async def test_tc24_old_empty_or_same(edits: SimpleNamespace) -> None:
+async def test_edit_rejects_empty_or_identical_old_new(edits: SimpleNamespace) -> None:
     _write(edits.root / "a.md", "x\n")
     await _mark_read(edits, "a.md")
     empty = await edits.tools["edit_file"].call({"path": "a.md", "old": "", "new": "y"})
@@ -490,7 +489,7 @@ async def test_tc24_old_empty_or_same(edits: SimpleNamespace) -> None:
     assert edits.asks == []
 
 
-async def test_tc25_non_utf8(edits: SimpleNamespace) -> None:
+async def test_edit_rejects_non_utf8(edits: SimpleNamespace) -> None:
     path = edits.root / "bin.txt"
     path.write_bytes(b"caf\xe9\n")
     # mark_read via session directly (read_file replaces undecodable bytes)
@@ -503,7 +502,7 @@ async def test_tc25_non_utf8(edits: SimpleNamespace) -> None:
     assert edits.asks == []
 
 
-async def test_tc26_utf8_bom_kept(edits: SimpleNamespace) -> None:
+async def test_edit_preserves_utf8_bom(edits: SimpleNamespace) -> None:
     path = edits.root / "bom.md"
     path.write_bytes(b"\xef\xbb\xbfhello\n")
     await _mark_read(edits, "bom.md")
@@ -515,7 +514,7 @@ async def test_tc26_utf8_bom_kept(edits: SimpleNamespace) -> None:
     assert path.read_bytes() == b"\xef\xbb\xbfhi\n"
 
 
-async def test_tc27_overwrite_existing(edits: SimpleNamespace) -> None:
+async def test_write_overwrites_existing_after_read(edits: SimpleNamespace) -> None:
     path = edits.root / "a.md"
     _write(path, "old\n")
     await _mark_read(edits, "a.md")
@@ -527,7 +526,7 @@ async def test_tc27_overwrite_existing(edits: SimpleNamespace) -> None:
     assert path.read_text(encoding="utf-8") == "new\n"
 
 
-async def test_tc29_read_set_refresh(edits: SimpleNamespace) -> None:
+async def test_successful_edit_refreshes_read_set(edits: SimpleNamespace) -> None:
     path = edits.root / "a.md"
     _write(path, "one\n")
     await _mark_read(edits, "a.md")
@@ -543,7 +542,7 @@ async def test_tc29_read_set_refresh(edits: SimpleNamespace) -> None:
     assert path.read_text(encoding="utf-8") == "three\n"
 
 
-async def test_tc30_partial_read_counts(edits: SimpleNamespace) -> None:
+async def test_partial_read_satisfies_read_before_write(edits: SimpleNamespace) -> None:
     path = edits.root / "a.md"
     _write(path, "\n".join(f"line-{i}" for i in range(1, 21)) + "\n")
     result = await edits.tools["read_file"].call(
@@ -557,7 +556,7 @@ async def test_tc30_partial_read_counts(edits: SimpleNamespace) -> None:
     assert "line-1x" in path.read_text(encoding="utf-8")
 
 
-async def test_tc31_mode_bits_preserved(edits: SimpleNamespace) -> None:
+async def test_edit_preserves_mode_bits(edits: SimpleNamespace) -> None:
     path = edits.root / "a.md"
     _write(path, "mode\n")
     os.chmod(path, 0o640)
@@ -569,13 +568,13 @@ async def test_tc31_mode_bits_preserved(edits: SimpleNamespace) -> None:
     assert stat.S_IMODE(path.stat().st_mode) == 0o640
 
 
-async def test_tc32_new_file_lf(edits: SimpleNamespace) -> None:
+async def test_new_file_uses_lf(edits: SimpleNamespace) -> None:
     out = await edits.tools["write_file"].call({"path": "lf.md", "content": "a\nb\n"})
     assert out.ok is True
     assert (edits.root / "lf.md").read_bytes() == b"a\nb\n"
 
 
-async def test_tc33_running_summary(edits: SimpleNamespace) -> None:
+async def test_edit_running_summary_verbs(edits: SimpleNamespace) -> None:
     assert (
         running_summary("edit_file", {"path": "a.md"}, edits.workspace) == "Edit a.md"
     )
@@ -584,26 +583,26 @@ async def test_tc33_running_summary(edits: SimpleNamespace) -> None:
     )
 
 
-async def test_tc34_tools_registered(edits: SimpleNamespace) -> None:
+async def test_edit_tools_registered_on_agent(edits: SimpleNamespace) -> None:
     assert "edit_file" in edits.tools
     assert "write_file" in edits.tools
     assert isinstance(edits.tools["edit_file"].inner_tool, EditFileTool)
     assert isinstance(edits.tools["write_file"].inner_tool, WriteFileTool)
 
 
-async def test_tc35_tools_never_call_ask(edits: SimpleNamespace) -> None:
+async def test_edit_tools_never_call_ask(edits: SimpleNamespace) -> None:
     assert not hasattr(edits.tools["edit_file"].inner_tool, "_ask")
     assert not hasattr(edits.tools["write_file"].inner_tool, "ask")
 
 
-async def test_tc37_aldwin_home_not_writable(edits: SimpleNamespace) -> None:
+async def test_aldwin_home_not_writable(edits: SimpleNamespace) -> None:
     target = edits.home / "secrets.yaml"
     out = await edits.tools["write_file"].call({"path": str(target), "content": "x\n"})
     assert out.ok is False
     assert edits.asks == []
 
 
-async def test_tc38_parents_not_created_before_approval(
+async def test_parents_not_created_before_approval(
     edits: SimpleNamespace,
 ) -> None:
     edits.answer["answer"] = ApprovalAnswer("no", "user")
@@ -614,7 +613,7 @@ async def test_tc38_parents_not_created_before_approval(
     assert not (edits.root / "newdir").exists()
 
 
-async def test_tc39_match_lines_capped_at_ten(edits: SimpleNamespace) -> None:
+async def test_multi_match_lists_at_most_ten_lines(edits: SimpleNamespace) -> None:
     lines = "\n".join(["foo"] * 12) + "\n"
     _write(edits.root / "a.md", lines)
     await _mark_read(edits, "a.md")

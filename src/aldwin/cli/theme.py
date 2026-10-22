@@ -94,7 +94,7 @@ def model_context_window(model: str) -> int:
 
 
 def context_left_percent(model: str, used_tokens: int) -> int:
-    """Return remaining context percentage (`0..100`) for `model` (`FR-13`)."""
+    """Return remaining context percentage (`0..100`) for `model`."""
     window = max(1, model_context_window(model))
     clamped_used = max(0, int(used_tokens))
     remaining = max(0.0, float(window - clamped_used)) / float(window) * 100.0
@@ -153,7 +153,7 @@ def create_console(
     file: IO[str] | None = None,
     force_terminal: bool | None = None,
 ) -> Console:
-    """Create the shared Rich `Console` configured with Aldwin's theme (`FR-11`)."""
+    """Create the shared Rich `Console` configured with Aldwin's theme."""
     return Console(
         theme=THEME,
         no_color=plain,
@@ -190,7 +190,7 @@ def format_relative_time(
     *,
     now: datetime | None = None,
 ) -> str:
-    """Format an ISO-8601 timestamp for the history divider (`FR-3`)."""
+    """Format an ISO-8601 timestamp for the history divider."""
     if not iso_ts:
         return "earlier"
     try:

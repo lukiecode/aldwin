@@ -48,7 +48,7 @@ async def edit_host(
         await host.stop_host()
 
 
-async def test_tc11_two_edits_one_step_decline_second(
+async def test_two_edits_one_step_decline_second(
     edit_host: tuple[AldwinClient, FakeModel, Path, object],
 ) -> None:
     """Two `edit_file` calls in one step: approvals are sequential; a no denies both."""
@@ -105,7 +105,7 @@ async def test_tc11_two_edits_one_step_decline_second(
     assert [event.summary for event in calls] == ["Edit a.md", "Edit b.md"]
 
 
-async def test_tc42_approvals_never_overlap(
+async def test_diff_approvals_never_overlap(
     edit_host: tuple[AldwinClient, FakeModel, Path, object],
 ) -> None:
     """A second Diff approval is only emitted after the first is answered."""
