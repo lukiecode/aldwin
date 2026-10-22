@@ -31,6 +31,7 @@ SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
     ("/memory", "Show profile and recent notes"),
     ("/skills", "List installed skills"),
     ("/workspace", "Show or switch the workspace folder"),
+    ("/verbose", "Show or hide file previews for this session"),
     ("/tools", "List built-in tools"),
     ("/exit", "Save and exit Aldwin"),
 )
@@ -355,6 +356,10 @@ async def handle_slash_command(
 
     if cmd == "/workspace":
         _render_workspace(arg, client=client, renderer=renderer)
+        return False
+
+    if cmd == "/verbose":
+        renderer.set_verbose(not renderer.verbose)
         return False
 
     if cmd == "/tools":

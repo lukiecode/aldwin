@@ -50,6 +50,10 @@ _RESERVED_SKILL_NAMES: Final[frozenset[str]] = frozenset(
         "remember",
         "recall",
         "set_persona",
+        "list_dir",
+        "glob",
+        "grep",
+        "read_file",
     }
 )
 
@@ -144,6 +148,7 @@ def build_tools(
     extra_tools: Sequence[Tool] = (),
 ) -> list[Tool]:
     """Construct built-in tools with `session_ctx` and wrap in policy."""
+    from aldwin.core.tools.files import build_file_tools
     from aldwin.core.tools.memory_tools import build_memory_tools
     from aldwin.core.tools.persona_tool import build_persona_tool
     from aldwin.core.tools.run_command import build_run_command_tool
@@ -190,6 +195,7 @@ def build_tools(
             cap=session_ctx.persona_cap,
             wrapped_by_policy=True,
         ),
+        *build_file_tools(session_ctx.workspace, session_ctx.policy_session),
         *extra_tools,
     ]
     verify_registered_tools(raw_tools)

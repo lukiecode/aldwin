@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -47,9 +48,11 @@ from aldwin.core.policy import (
     PolicySession,
     PolicyWrappedTool,
     compute_digest,
+    sanitize_display_text,
 )
 from aldwin.core.settings import load_config, load_secrets, update_config_model
 from aldwin.core.tools import RememberTool, summarize_tool_result
+from aldwin.core.tools.files import row_summary, running_summary
 from aldwin.core.workspace import Workspace, format_outside_display
 from aldwin.host.in_process import InProcessTransport, WorkspaceSummary
 from aldwin.host.sessions import (
@@ -124,6 +127,20 @@ def format_args_preview(arguments: dict[str, Any]) -> str:
             )
     raw = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
     return shorten_one_line(raw, MAX_PREVIEW_CHARS)
+
+
+def preview_lines(content: str, *, limit: int = 12) -> str:
+    """First `limit` lines of tool text, without one outer untrusted wrapper."""
+    text = content
+    match = re.match(r'<untrusted id="([^"]+)" source="[^"]*">\n', text)
+    if match is not None:
+        close = f'\n</untrusted id="{match.group(1)}">'
+        start = match.end()
+        end = text.find(close, start)
+        if end != -1:
+            text = text[start:end]
+    lines = text.splitlines()[:limit]
+    return sanitize_display_text("\n".join(lines))
 
 
 def format_tool_summary(content: str) -> str:
@@ -865,6 +882,7 @@ class AldwinHost:
             step_text_chunks: list[str] = []
             streamed_before_tools: str = ""
             tool_start_times: dict[str, float] = {}
+            tool_running: dict[str, str] = {}
             final_status: str = "completed"
             final_usage: Usage | None = None
 
@@ -901,12 +919,19 @@ class AldwinHost:
                             call.arguments,
                         )
                         tool_start_times[call.id] = time.monotonic()
+                        running = running_summary(
+                            call.name,
+                            call.arguments,
+                            self._workspace,
+                        )
+                        tool_running[call.id] = running
                         await scope.emit(
                             ToolCallEvent(
                                 re=req.id,
                                 call_id=call.id,
                                 name=call.name,
                                 args_preview=format_args_preview(call.arguments),
+                                summary=running,
                             )
                         )
                     elif isinstance(ev, AgentlingToolResultEvent):
@@ -937,12 +962,18 @@ class AldwinHost:
                             res.content,
                             is_error=res.is_error,
                         )
+                        running = tool_running.pop(res.tool_call_id, "")
+                        summary = row_summary(running, summary, ok=ok)
+                        preview = ""
+                        if ok:
+                            preview = preview_lines(str(res.content))
                         await scope.emit(
                             ToolResultEvent(
                                 re=req.id,
                                 call_id=res.tool_call_id,
                                 ok=ok,
                                 summary=summary,
+                                preview=preview,
                                 duration_ms=duration_ms,
                             )
                         )

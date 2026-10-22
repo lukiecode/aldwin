@@ -87,7 +87,13 @@ def test_list_builtin_tools_metadata() -> None:
     items = list_builtin_tools()
     client_items = get_builtin_tools()
     assert items == client_items
-    assert [item.name for item in items] == list(BUILTIN_TOOL_NAMES)
+    assert [item.name for item in items] == [
+        *BUILTIN_TOOL_NAMES,
+        "list_dir",
+        "glob",
+        "grep",
+        "read_file",
+    ]
 
     by_name: dict[str, ToolInfo] = {item.name: item for item in items}
     for item in items:
@@ -100,6 +106,10 @@ def test_list_builtin_tools_metadata() -> None:
     assert by_name["web_fetch"].requires_approval is False
     assert by_name["remember"].requires_approval is False
     assert by_name["recall"].requires_approval is False
+    assert by_name["list_dir"].requires_approval is False
+    assert by_name["glob"].requires_approval is False
+    assert by_name["grep"].requires_approval is False
+    assert by_name["read_file"].requires_approval is False
 
 
 def test_tool_output_and_summarize_tool_result_contract() -> None:

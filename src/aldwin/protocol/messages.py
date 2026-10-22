@@ -203,6 +203,7 @@ class ToolCallEvent(EventBase):
     call_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     args_preview: str = ""
+    summary: str = ""
 
 
 class ToolResultEvent(EventBase):
@@ -212,6 +213,7 @@ class ToolResultEvent(EventBase):
     call_id: str = Field(min_length=1)
     ok: bool
     summary: str = ""
+    preview: str = ""
     duration_ms: int = Field(default=0, ge=0)
 
 

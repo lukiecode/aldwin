@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 from datetime import datetime, timezone
+from pathlib import Path
 
 from aldwin.cli.render import (
     ChatRenderer,
@@ -627,3 +629,167 @@ def test_diff_approval_panel_folds_at_24_lines_and_expands() -> None:
     expanded_text = console_exp.export_text()
     assert "+added line 26" in expanded_text
     assert "more lines (ctrl+o to expand)" not in expanded_text
+
+
+def test_tc44_verbose_help_readme(aldwin_home: Path) -> None:
+    """`/verbose` shows preview lines, and help and the README list it."""
+    config = aldwin_home / "config.yaml"
+    before = config.read_bytes() if config.is_file() else b""
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+    assert renderer.verbose is False
+    preview = "\n".join(f"{number}\trow" for number in range(1, 16))
+    turn = renderer.start_turn()
+    turn.on_tool_call(
+        ToolCallEvent(re="r1", call_id="c1", name="read_file", summary="Read a.txt")
+    )
+    turn.on_tool_result(
+        ToolResultEvent(
+            re="r1",
+            call_id="c1",
+            ok=True,
+            summary="Read a.txt · lines 1–15 of 15",
+            preview=preview,
+        )
+    )
+    quiet = console.export_text()
+    assert "Read a.txt · lines 1–15 of 15" in quiet
+    assert "1\trow" not in quiet
+
+    renderer.set_verbose(True)
+    turn_on = renderer.start_turn()
+    turn_on.on_tool_call(
+        ToolCallEvent(re="r1", call_id="c2", name="read_file", summary="Read a.txt")
+    )
+    turn_on.on_tool_result(
+        ToolResultEvent(
+            re="r1",
+            call_id="c2",
+            ok=True,
+            summary="Read a.txt · lines 1–15 of 15",
+            preview=preview,
+        )
+    )
+    shown = console.export_text()
+    preview_rows = [
+        line
+        for line in shown.splitlines()
+        if line.startswith("    ") and line.strip().endswith("row")
+    ]
+    assert [line.strip().split()[0] for line in preview_rows] == [
+        str(number) for number in range(1, 13)
+    ]
+    assert "13" not in {line.strip().split()[0] for line in preview_rows}
+    assert "verbose: on" in shown
+    renderer.set_verbose(False)
+    assert "verbose: off" in console.export_text()
+    after = config.read_bytes() if config.is_file() else b""
+    assert after == before
+
+    help_buf = io.StringIO()
+    help_console = create_console(plain=True, width=80, record=True, file=help_buf)
+    help_renderer = ChatRenderer(help_console, plain=True)
+
+    async def _run_help() -> None:
+        from fakes.host import FakeClient
+
+        from aldwin.cli.commands import handle_slash_command
+
+        await handle_slash_command(
+            "/help",
+            client=FakeClient(),
+            renderer=help_renderer,
+            prompt_line=_noop_prompt,
+        )
+
+    asyncio.run(_run_help())
+    help_text = help_console.export_text()
+    assert "/verbose" in help_text
+    assert "/workspace" in help_text
+    readme = Path("README.md").read_text(encoding="utf-8")
+    slash = readme.split("### Slash commands", 1)[1].split("### Keyboard", 1)[0]
+    assert "/verbose" in slash
+    assert "/workspace" in slash
+
+
+async def _noop_prompt(_label: str) -> str:
+    return ""
+
+
+def test_tc45_pending_glyph_and_plain() -> None:
+    """File tools use a bullet while they run. Other tools keep the gear."""
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+    turn = renderer.start_turn()
+    turn.on_tool_call(
+        ToolCallEvent(re="r1", call_id="c1", name="read_file", summary="Read a.txt")
+    )
+    turn.on_tool_call(ToolCallEvent(re="r1", call_id="c2", name="web_search"))
+    turn.on_tool_result(
+        ToolResultEvent(
+            re="r1",
+            call_id="c1",
+            ok=False,
+            summary="Read .env · blocked: may contain secrets",
+        )
+    )
+    text = console.export_text()
+    assert "● Read a.txt" in text
+    assert "⚙ web_search" in text
+    assert "Read .env · blocked: may contain secrets" in text
+
+    color_buf = io.StringIO()
+    color = create_console(
+        width=80,
+        record=True,
+        file=color_buf,
+        force_terminal=True,
+    )
+    color_turn = ChatRenderer(color).start_turn()
+    color_turn.on_tool_call(ToolCallEvent(re="r1", call_id="c1", name="read_file"))
+    color_turn.on_tool_result(
+        ToolResultEvent(
+            re="r1",
+            call_id="c1",
+            ok=False,
+            summary="Read .env · blocked: may contain secrets",
+        )
+    )
+    failure = [segment for segment in color._record_buffer if "✗" in segment.text]
+    assert failure
+    style = failure[0].style
+    assert style is not None
+    assert "err" in str(style) or style.color is not None
+
+
+def test_tool_rows_strip_terminal_controls() -> None:
+    """File-tool rows and previews drop ANSI and other terminal controls."""
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+    renderer.set_verbose(True)
+    console.export_text()
+    turn = renderer.start_turn()
+    turn.on_tool_call(
+        ToolCallEvent(
+            re="r1",
+            call_id="c1",
+            name="read_file",
+            summary="Read \x1b[2Ja.txt",
+        )
+    )
+    turn.on_tool_result(
+        ToolResultEvent(
+            re="r1",
+            call_id="c1",
+            ok=True,
+            summary="Read \x1b[2Ja.txt · lines 1–1 of 1",
+            preview="1\t\x1b[31mrow",
+        )
+    )
+    shown = console.export_text()
+    assert "\x1b" not in shown
+    assert "Read a.txt" in shown
+    assert "row" in shown

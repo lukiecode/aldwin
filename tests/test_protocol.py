@@ -360,3 +360,49 @@ def test_protocol_v2_messages_round_trip() -> None:
     for ev in v2_events:
         parsed_ev = parse_event(ev.model_dump_json())
         assert parsed_ev == ev
+
+
+def test_tc46_tool_event_preview_fields() -> None:
+    """`summary` and `preview` are optional and stay on protocol v2."""
+    call_json = json.dumps(
+        {
+            "v": 2,
+            "type": "event",
+            "re": "req_1",
+            "kind": "tool_call",
+            "call_id": "c1",
+            "name": "read_file",
+            "args_preview": "a.txt",
+        }
+    )
+    call = parse_event(call_json)
+    assert isinstance(call, ToolCallEvent)
+    assert call.summary == ""
+    assert call.v == 2
+    call_with_summary = call.model_copy(update={"summary": "Read a.txt"})
+    round_call = parse_event(call_with_summary.model_dump_json())
+    assert isinstance(round_call, ToolCallEvent)
+    assert round_call.summary == "Read a.txt"
+    assert round_call.v == 2
+
+    result_json = json.dumps(
+        {
+            "v": 2,
+            "type": "event",
+            "re": "req_1",
+            "kind": "tool_result",
+            "call_id": "c1",
+            "ok": True,
+            "summary": "Read a.txt · lines 1–1 of 1",
+        }
+    )
+    result = parse_event(result_json)
+    assert isinstance(result, ToolResultEvent)
+    assert result.preview == ""
+    assert result.v == 2
+    result_with_preview = result.model_copy(update={"preview": "1\trow"})
+    round_result = parse_event(result_with_preview.model_dump_json())
+    assert isinstance(round_result, ToolResultEvent)
+    assert round_result.preview == "1\trow"
+    assert round_result.summary == "Read a.txt · lines 1–1 of 1"
+    assert round_result.v == 2

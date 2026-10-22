@@ -125,6 +125,26 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
         description="Replace Aldwin's persona.md after y/n approval.",
         requires_approval=True,
     ),
+    ToolInfo(
+        name="list_dir",
+        description="List files and folders in the workspace.",
+        requires_approval=False,
+    ),
+    ToolInfo(
+        name="glob",
+        description="Find files by name with a glob pattern.",
+        requires_approval=False,
+    ),
+    ToolInfo(
+        name="grep",
+        description="Search file contents for a regular expression.",
+        requires_approval=False,
+    ),
+    ToolInfo(
+        name="read_file",
+        description="Read a text file and return numbered lines.",
+        requires_approval=False,
+    ),
 )
 
 

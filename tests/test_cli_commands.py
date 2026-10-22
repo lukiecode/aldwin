@@ -235,3 +235,41 @@ async def test_workspace_command_shows_and_switches_root_and_clears_grants(
     assert "also allowed this session: (none)" in text
     assert "session grants cleared" in text
     assert "workspace not found: /nonexistent_dir_xyz" in text
+
+
+async def test_tc44_verbose_help_readme(aldwin_home: Path) -> None:
+    """`/help` and the README list `/verbose` and `/workspace`."""
+    config = aldwin_home / "config.yaml"
+    before = config.read_bytes() if config.is_file() else b""
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+    await handle_slash_command(
+        "/verbose",
+        client=FakeClient(),
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    await handle_slash_command(
+        "/verbose",
+        client=FakeClient(),
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    await handle_slash_command(
+        "/help",
+        client=FakeClient(),
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    text = console.export_text()
+    assert "verbose: on" in text
+    assert "verbose: off" in text
+    assert "/verbose" in text
+    assert "/workspace" in text
+    readme = Path("README.md").read_text(encoding="utf-8")
+    slash = readme.split("### Slash commands", 1)[1].split("### Keyboard", 1)[0]
+    assert "/verbose" in slash
+    assert "/workspace" in slash
+    after = config.read_bytes() if config.is_file() else b""
+    assert after == before
