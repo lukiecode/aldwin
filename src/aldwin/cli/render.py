@@ -240,6 +240,13 @@ class ChatRenderer:
     def __init__(self, console: Console, *, plain: bool = False) -> None:
         self.console = console
         self.plain = plain
+        self.verbose = False
+
+    def set_verbose(self, enabled: bool) -> None:
+        """Turn file-tool previews on or off for this session and say which."""
+        self.verbose = enabled
+        state = "on" if enabled else "off"
+        self.console.print(f"verbose: {state}")
 
     def render_welcome(
         self,
@@ -461,7 +468,7 @@ class TurnRenderer:
         self._started_at: float = self._clock()
         self._spinner_text: str = "Thinking…"
         self._tool_count: int = 0
-        self._pending_tools: dict[str, tuple[str, str]] = {}
+        self._pending_tools: dict[str, tuple[str, str, str]] = {}
         self._printed_pending_ids: set[str] = set()
         self._markdown_buffer: str = ""
         self._has_printed_text: bool = False
@@ -485,7 +492,16 @@ class TurnRenderer:
         tools = _tool_word(self._tool_count)
         return f"working · {elapsed} · {tools}"
 
-    def _build_pending_tool_line(self, name: str, display_args: str) -> Text:
+    def _build_pending_tool_line(
+        self,
+        name: str,
+        display_args: str,
+        summary: str = "",
+    ) -> Text:
+        if summary:
+            card = Text("  ● ", style="muted", no_wrap=True, overflow="ellipsis")
+            card.append(summary, style="muted")
+            return card
         card = Text("  ⚙ ", style="muted", no_wrap=True, overflow="ellipsis")
         card.append(name, style="muted")
         if display_args:
@@ -495,9 +511,11 @@ class TurnRenderer:
     def _build_live_renderable(self) -> RenderableType:
         """Build the composite `Group` displayed inside the transient `Live` region."""
         parts: list[RenderableType] = []
-        for call_id, (tool_name, display_args) in self._pending_tools.items():
+        for call_id, (tool_name, display_args, summary) in self._pending_tools.items():
             if call_id not in self._printed_pending_ids:
-                parts.append(self._build_pending_tool_line(tool_name, display_args))
+                parts.append(
+                    self._build_pending_tool_line(tool_name, display_args, summary)
+                )
 
         if self._markdown_buffer.strip():
             parts.append(Markdown(self._markdown_buffer))
@@ -605,13 +623,14 @@ class TurnRenderer:
         """Flush buffered text, track pending `⚙` card, and update spinner."""
         self._flush_markdown_buffer()
         display_args = format_display_args(event.args_preview, tool_name=event.name)
-        self._pending_tools[event.call_id] = (event.name, display_args)
+        summary = sanitize_display_text(event.summary.strip())
+        self._pending_tools[event.call_id] = (event.name, display_args, summary)
         self._spinner_text = f"Running {event.name}…"
 
         if self.plain or not self.console.is_interactive:
             self._printed_pending_ids.add(event.call_id)
             self.console.print(
-                self._build_pending_tool_line(event.name, display_args),
+                self._build_pending_tool_line(event.name, display_args, summary),
                 overflow="ellipsis",
                 no_wrap=True,
             )
@@ -621,19 +640,24 @@ class TurnRenderer:
 
     def on_tool_result(self, event: ToolResultEvent) -> None:
         """Print a single-line `✓` or `✗` tool card with args, duration, and summary."""
-        tool_name, display_args = self._pending_tools.pop(event.call_id, ("tool", ""))
+        tool_name, display_args, _pending_summary = self._pending_tools.pop(
+            event.call_id,
+            ("tool", "", ""),
+        )
         was_printed_pending = event.call_id in self._printed_pending_ids
         self._printed_pending_ids.discard(event.call_id)
 
         self._tool_count += 1
         if self._pending_tools:
-            next_tool, _ = next(iter(self._pending_tools.values()))
+            next_tool, _next_args, _next_summary = next(
+                iter(self._pending_tools.values())
+            )
             self._spinner_text = f"Running {next_tool}…"
         else:
             self._spinner_text = "Thinking…"
 
         duration = format_duration_ms(event.duration_ms)
-        summary = clean_tool_summary(tool_name, event.summary)
+        summary = sanitize_display_text(clean_tool_summary(tool_name, event.summary))
         include_args = bool(display_args) and not was_printed_pending
 
         if event.ok:
@@ -662,6 +686,10 @@ class TurnRenderer:
             card.append(f"  {reason}", style="err")
 
         self.console.print(card, overflow="ellipsis", no_wrap=True)
+        if self._chat.verbose and event.ok and event.preview.strip():
+            shown = sanitize_display_text(event.preview)
+            for line in shown.splitlines()[:12]:
+                self.console.print(Text(f"    {line}", style="muted"))
         self._last_printed_kind = "tool"
         self._refresh_live()
 
