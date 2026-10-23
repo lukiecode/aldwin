@@ -6,7 +6,7 @@ import asyncio
 import select
 import sys
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, contextmanager
 from pathlib import Path
 from types import TracebackType
@@ -26,11 +26,12 @@ from rich.text import Text
 
 from aldwin.cli.commands import (
     SlashCommandClient,
-    SlashCompleter,
     handle_slash_command,
     render_shortcuts,
 )
+from aldwin.cli.completion import RefreshableCompleter, build_chat_completer
 from aldwin.cli.render import ChatRenderer
+from aldwin.cli.skill_completer import SkillCache, SkillLexer, extract_skill_tokens
 from aldwin.cli.theme import (
     PLAIN_PROMPT_STYLE,
     PROMPT_STYLE,
@@ -42,6 +43,7 @@ from aldwin.client import (
     ProtocolError,
     open_in_process_client,
     pop_profile_truncation_warning,
+    sanitize_display_text,
 )
 from aldwin.protocol import (
     ApprovalAnswer,
@@ -51,6 +53,8 @@ from aldwin.protocol import (
     Event,
     HistoryEvent,
     NoticeEvent,
+    SkillsEvent,
+    SkillsUsedEvent,
     StatusEvent,
     TextEvent,
     TodoUpdatedEvent,
@@ -59,6 +63,20 @@ from aldwin.protocol import (
 )
 
 ESCAPE_FLUSH_DELAY: Final[float] = 0.05
+
+
+def _render_skills_used(console: Console, event: SkillsUsedEvent) -> None:
+    """Print dim `using …` and yellow drop warnings from `skills.used`."""
+    if event.names:
+        names = [sanitize_display_text(n) for n in event.names]
+        console.print(Text("using " + ", ".join(names), style="muted"))
+    for dropped in event.dropped:
+        name = sanitize_display_text(dropped.name)
+        if dropped.reason == "unknown":
+            msg = f"@{name} isn't a skill any more, sent as text"
+        else:
+            msg = f"Only 3 skills per message; @{name} ignored"
+        console.print(Text(msg, style="warn"))
 
 
 def _wake_pending_pipe_input(input_dev: Input) -> None:
@@ -128,7 +146,14 @@ class ChatClientProtocol(SlashCommandClient, Protocol):
 
     async def todo_get(self) -> TodoUpdatedEvent: ...
 
-    def turn(self, text: str) -> AsyncGenerator[Event, None]: ...
+    def turn(
+        self,
+        text: str,
+        *,
+        skills: Sequence[str] = (),
+    ) -> AsyncGenerator[Event, None]: ...
+
+    async def skills_list(self) -> SkillsEvent: ...
 
     async def stop(self) -> DoneEvent | ErrorEvent: ...
 
@@ -407,8 +432,13 @@ def build_prompt_session(
     plain: bool = False,
     input_dev: Input | None = None,
     output_dev: Output | None = None,
+    completer: object | None = None,
+    lexer: object | None = None,
 ) -> PromptSession[str]:
-    """Create `PromptSession` with `FileHistory`, `SlashCompleter`, and keys."""
+    """Create `PromptSession` with `FileHistory`, completer, and keys."""
+    from prompt_toolkit.completion import Completer
+    from prompt_toolkit.lexers import Lexer
+
     kb = KeyBindings()
 
     @kb.add("escape", "enter")
@@ -432,9 +462,21 @@ def build_prompt_session(
     if effective_output is None and isinstance(input_dev, PipeInput):
         effective_output = DummyOutput()
 
+    active_completer: Completer | None
+    if isinstance(completer, Completer):
+        active_completer = completer
+    else:
+        active_completer = build_chat_completer(
+            SkillCache(items=[]),
+            enable_skills=True,
+        )
+
+    active_lexer = lexer if isinstance(lexer, Lexer) else None
+
     return PromptSession(
         history=_create_history(home),
-        completer=SlashCompleter(),
+        completer=active_completer,
+        lexer=active_lexer,
         key_bindings=kb,
         bottom_toolbar=toolbar_fn,
         style=PLAIN_PROMPT_STYLE if plain else PROMPT_STYLE,
@@ -539,12 +581,19 @@ async def _chat_loop(
             todo_label=renderer.todo_view.toolbar_label(),
         )
 
+    skill_cache = SkillCache(items=[])
+    skill_lexer = SkillLexer(skill_cache)
+    chat_completer = RefreshableCompleter(
+        build_chat_completer(skill_cache, enable_skills=True)
+    )
     session = build_prompt_session(
         boot.home,
         toolbar_fn=_toolbar,
         plain=boot.plain,
         input_dev=input_dev,
         output_dev=output_dev,
+        completer=chat_completer,
+        lexer=skill_lexer,
     )
 
     async def _prompt_line(label: str) -> str:
@@ -557,7 +606,13 @@ async def _chat_loop(
         return await sub_session.prompt_async(label)
 
     try:
-        await client.connect()
+        hello = await client.connect()
+        enable_skills = hello.v >= 2
+        chat_completer.inner = build_chat_completer(
+            skill_cache, enable_skills=enable_skills
+        )
+        if not enable_skills:
+            session.lexer = None
         history_ev = await client.history(limit=20)
         if not skip_welcome:
             renderer.render_welcome(
@@ -567,6 +622,16 @@ async def _chat_loop(
                 display_workspace=boot.display_workspace or None,
             )
         renderer.render_history(history_ev, updated_at=client.updated_at)
+        if enable_skills:
+            try:
+                catalog = await client.skills_list()
+                skill_cache.replace(catalog.items)
+            except (ProtocolError, AttributeError) as exc:
+                console.print(Text(f"Skill list unavailable: {exc}", style="warn"))
+                chat_completer.inner = build_chat_completer(
+                    skill_cache, enable_skills=False
+                )
+                session.lexer = None
         try:
             from aldwin.cli.todo_view import TodoViewState
 
@@ -631,6 +696,7 @@ async def _chat_loop(
                 continue
 
             turn_renderer = renderer.start_turn()
+            picked = extract_skill_tokens(user_text, skill_cache.known_names())
 
             async def _on_turn_escape() -> None:
                 await client.stop()
@@ -652,8 +718,12 @@ async def _chat_loop(
                     on_escape=_on_turn_escape,
                     on_ctrl_c=_on_turn_ctrl_c,
                 ) as listener:
-                    async for ev in client.turn(user_text):
-                        if isinstance(ev, TextEvent):
+                    async for ev in client.turn(user_text, skills=picked):
+                        if isinstance(ev, SkillsUsedEvent):
+                            _render_skills_used(console, ev)
+                        elif isinstance(ev, SkillsEvent):
+                            skill_cache.replace(ev.items)
+                        elif isinstance(ev, TextEvent):
                             turn_renderer.on_text(ev.delta)
                         elif isinstance(ev, TodoUpdatedEvent):
                             turn_renderer.pause_for_todo()

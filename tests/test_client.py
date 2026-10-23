@@ -152,6 +152,7 @@ async def test_client_cleans_up_queue_when_caller_breaks_early(
                 break
 
         assert len(seen) == 1
+        assert isinstance(seen[0], TextEvent)
         await client.stop()
         assert client._queues == {}
 

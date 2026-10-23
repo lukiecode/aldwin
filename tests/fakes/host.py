@@ -107,7 +107,7 @@ class FakeHost:
                     name="broken-skill",
                     description="",
                     source="user",
-                    error="missing description",
+                    flags=("error: missing description",),
                 ),
             ),
             invalid=(
@@ -173,9 +173,8 @@ class FakeHost:
         *,
         skills: Sequence[str] = (),
     ) -> AsyncGenerator[Event, None]:
-        _ = skills
         self.turns.append(text)
-        self.requests.append(("turn", text))
+        self.requests.append(("turn", text, list(skills)))
         self._stop_gate.clear()
         self.turn_started_event.set()
         events = (
@@ -253,8 +252,8 @@ class FakeHost:
                 name=s.name,
                 description=s.description,
                 source=s.source,
-                tools_removed=s.tools_removed,
-                error=s.error,
+                flags=list(getattr(s, "flags", ())),
+                last_used=getattr(s, "last_used", None),
             )
             for s in self.custom_skills.valid
         )

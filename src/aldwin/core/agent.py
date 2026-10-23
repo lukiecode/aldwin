@@ -28,6 +28,7 @@ from aldwin.core.settings import (
     load_secrets,
     resolve_key,
 )
+from aldwin.core.skills import build_task as build_task  # noqa: F401  # public re-export
 from aldwin.core.tools import builtin_tools
 from aldwin.core.workspace import Workspace
 

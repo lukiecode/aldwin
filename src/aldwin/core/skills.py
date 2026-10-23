@@ -411,24 +411,136 @@ def skills_fingerprint(home: Path) -> tuple[tuple[str, int, int], ...]:
 
 def to_catalog_items(
     catalogue: list[LoadedSkill],
+    *,
+    last_used: dict[str, str] | None = None,
 ) -> list[dict[str, object]]:
     """Map catalogue entries to protocol `SkillCatalogItem` field dicts."""
+    recent = last_used or {}
     items: list[dict[str, object]] = []
     for entry in catalogue:
-        error: str | None = None
-        tools_removed = False
-        for flag in entry.flags:
-            if flag.startswith("error:"):
-                error = flag.removeprefix("error:").strip()
-            elif flag == "tools removed":
-                tools_removed = True
         items.append(
             {
                 "name": entry.name,
                 "description": entry.description,
                 "source": entry.source,
-                "tools_removed": tools_removed,
-                "error": error,
+                "flags": list(entry.flags),
+                "last_used": recent.get(entry.name),
             }
         )
     return items
+
+
+PICKED_SKILLS_CAP: Final[int] = 10_000
+MAX_PICKED_SKILLS: Final[int] = 3
+_SKILL_CUT_MARKER: Final[str] = "…(skill cut to fit)"
+
+# Longer closing tags first so partial replacements stay consistent.
+_MARKUP_ESCAPES: Final[tuple[tuple[str, str], ...]] = (
+    ("</picked_skills>", "&lt;/picked_skills>"),
+    ("<picked_skills>", "&lt;picked_skills>"),
+    ("</user_message>", "&lt;/user_message>"),
+    ("<user_message>", "&lt;user_message>"),
+    ("</skill>", "&lt;/skill>"),
+    ("<skill", "&lt;skill"),
+)
+
+
+def escape_skill_markup(text: str) -> str:
+    """Escape tags that could fake the picked-skills task structure."""
+    out = text
+    for old, new in _MARKUP_ESCAPES:
+        out = out.replace(old, new)
+    return out
+
+
+def _is_error_skill(entry: LoadedSkill) -> bool:
+    return any(flag.startswith("error:") for flag in entry.flags)
+
+
+def resolve_picked_skills(
+    names: list[str],
+    catalogue: list[LoadedSkill] | dict[str, LoadedSkill],
+    *,
+    limit: int = MAX_PICKED_SKILLS,
+) -> tuple[list[LoadedSkill], list[tuple[str, Literal["unknown", "limit"]]]]:
+    """Validate `@` picks: dedupe, skip errors/unknown, cap at `limit`.
+
+    Returns `(picked, dropped)` where each dropped entry is `(name, reason)`.
+    """
+    by_name: dict[str, LoadedSkill]
+    if isinstance(catalogue, dict):
+        by_name = catalogue
+    else:
+        by_name = {entry.name: entry for entry in catalogue}
+
+    picked: list[LoadedSkill] = []
+    dropped: list[tuple[str, Literal["unknown", "limit"]]] = []
+    seen: set[str] = set()
+
+    for name in names:
+        cleaned = name.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        entry = by_name.get(cleaned)
+        if entry is None or entry.skill is None or _is_error_skill(entry):
+            dropped.append((cleaned, "unknown"))
+            continue
+        if len(picked) >= limit:
+            dropped.append((cleaned, "limit"))
+            continue
+        picked.append(entry)
+    return picked, dropped
+
+
+def build_task(user_text: str, picked: list[LoadedSkill]) -> str:
+    """Wrap `@`-picked skill bodies ahead of the user message for Agentling.
+
+    With no picks, returns `user_text` unchanged. Escapes markup in bodies and
+    user text; caps total picked section at `PICKED_SKILLS_CAP` characters.
+    """
+    if not picked:
+        return user_text
+
+    skill_blocks: list[str] = []
+    remaining = PICKED_SKILLS_CAP
+    header = (
+        "<picked_skills>\nThe user picked these skills for this message. Follow them.\n"
+    )
+    footer = "</picked_skills>"
+    # Reserve space for wrapper lines around each body.
+    remaining -= len(header) + len(footer)
+
+    for entry in picked:
+        open_tag = f'<skill name="{entry.name}">\n'
+        close_tag = "\n</skill>\n"
+        overhead = len(open_tag) + len(close_tag)
+        if remaining <= overhead + len(_SKILL_CUT_MARKER):
+            logger.warning(
+                "Picked skill %r omitted: picked text already at %s char cap",
+                entry.name,
+                PICKED_SKILLS_CAP,
+            )
+            break
+        body = escape_skill_markup(entry.body)
+        budget = remaining - overhead
+        if len(body) > budget:
+            keep = max(0, budget - len(_SKILL_CUT_MARKER))
+            body = body[:keep] + _SKILL_CUT_MARKER
+            logger.warning(
+                "Picked skill %r cut to fit %s char cap",
+                entry.name,
+                PICKED_SKILLS_CAP,
+            )
+        block = f"{open_tag}{body}{close_tag}"
+        skill_blocks.append(block)
+        remaining -= len(block)
+
+    if not skill_blocks:
+        return user_text
+
+    escaped_user = escape_skill_markup(user_text)
+    return (
+        f"{header}{''.join(skill_blocks)}{footer}\n\n"
+        f"<user_message>\n{escaped_user}\n</user_message>"
+    )
