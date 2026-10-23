@@ -6,8 +6,10 @@ import asyncio
 import io
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from fakes.host import FakeClient
+from prompt_toolkit.formatted_text import to_plain_text
 from prompt_toolkit.input import Input
 from prompt_toolkit.input.defaults import create_pipe_input
 from rich.console import Console
@@ -16,9 +18,11 @@ from aldwin.cli.chat_screen import (
     TurnKeyListener,
     build_prompt_session,
     format_bottom_toolbar,
+    format_toolbar_model_segment,
     read_approval_key,
     run_chat,
 )
+from aldwin.cli.render import CONTEXT_NEARLY_FULL_NOTICE
 from aldwin.cli.theme import PLAIN_PROMPT_STYLE, create_console
 from aldwin.client import BootstrapResult, bootstrap
 from aldwin.protocol import (
@@ -39,16 +43,21 @@ async def _run_chat(
     client: FakeClient,
     console: Console,
     input_dev: Input,
+    key_status: str = "ok",
 ) -> int:
     """Run one chat session, and fail the test if it never returns.
 
     A missed pipe wakeup used to block ``prompt_async`` until the CI job was
     killed, which looks like a stuck pytest step.
     """
-    return await asyncio.wait_for(
-        run_chat(boot, client=client, console=console, input_dev=input_dev),
-        timeout=_CHAT_TIMEOUT_S,
-    )
+    with patch(
+        "aldwin.client.verify_active_openai_key",
+        new=AsyncMock(return_value=key_status),
+    ):
+        return await asyncio.wait_for(
+            run_chat(boot, client=client, console=console, input_dev=input_dev),
+            timeout=_CHAT_TIMEOUT_S,
+        )
 
 
 async def test_chat_approval_yes_sends_approve_and_resumes(aldwin_home: Path) -> None:
@@ -197,6 +206,25 @@ async def test_prompt_input_bindings_empty_ignored_and_toolbar(
         )
         == " ? for shortcuts   gpt-4o · ##########95% context left · Tasks 2/5 "
     )
+    # gpt-4o window 128k → 15% left needs ~108_800 used; 8% needs ~117_760.
+    warn = to_plain_text(format_toolbar_model_segment("gpt-4o", 108_800, plain=True))
+    assert "15% context left" in warn
+    assert "/new to start fresh" in warn
+    assert "warn" in warn
+    warn_ft = format_toolbar_model_segment("gpt-4o", 108_800, plain=True)
+    assert any(
+        frag[0] == "class:bottom-toolbar.warn" and "warn" in frag[1] for frag in warn_ft
+    )
+    err = to_plain_text(format_toolbar_model_segment("gpt-4o", 117_760, plain=True))
+    assert "8% context left" in err
+    assert "err" in err
+    err_ft = format_toolbar_model_segment("gpt-4o", 117_760, plain=True)
+    assert any(
+        frag[0] == "class:bottom-toolbar.err" and "err" in frag[1] for frag in err_ft
+    )
+    assert "Key rejected" in to_plain_text(
+        format_toolbar_model_segment("gpt-4o", 0, key_rejected=True, plain=True)
+    )
 
     boot = bootstrap(plain=True)
     client = FakeClient()
@@ -275,7 +303,7 @@ async def test_ctrl_c_once_warns_twice_quits_and_ctrl_d_saves_and_exits(
     assert rc_a == 0
     assert client_a.closed is True
     text_a = console_a.export_text()
-    # FR-4: Ctrl+C hint stays in the dock footer, not scrollback.
+    # Ctrl+C hint stays in the dock footer, not scrollback.
     assert "Press Ctrl-C again to quit" not in text_a
     assert "Saved. See you." in text_a
 
@@ -305,7 +333,7 @@ async def test_chat_slash_command_status_and_error_events(aldwin_home: Path) -> 
     client = FakeClient()
     client.queue_turn(
         [
-            StatusEvent(re="r1", message="OpenAI is busy, retrying (1 of 3)…"),
+            StatusEvent(re="r1", message="OpenAI is busy. Retrying in 1s (1/3)…"),
             ErrorEvent(re="r1", code="rate_limited", message="rate limit"),
         ]
     )
@@ -326,7 +354,8 @@ async def test_chat_slash_command_status_and_error_events(aldwin_home: Path) -> 
     assert rc == 0
     text = console.export_text()
     assert "Commands:" in text
-    assert "OpenAI is busy, retrying (1 of 3)…" in text
+    # Retry status updates in-place (not stacked into scrollback in plain mode).
+    assert text.count("OpenAI is busy. Retrying") == 0
     assert "OpenAI is rate-limiting requests right now." in text
 
 
@@ -366,7 +395,7 @@ async def test_ctrl_c_during_turn_stops_then_second_ctrl_c_quits(
     assert client.stop_calls >= 1
     assert client.closed is True
     text = console.export_text()
-    # FR-4: quit hint is footer-only; second Ctrl+C still exits.
+    # Quit hint is footer-only; second Ctrl+C still exits.
     assert "Saved. See you." in text
 
 
@@ -461,3 +490,83 @@ async def test_approval_keys_default_no_ctrl_o_session_grant_and_decline_reason(
         ("ap_edit", "no", "sha256:1234", "only fix the heading")
     ]
     assert "✗ declined" in console.export_text()
+
+
+async def test_invalid_key_passes_key_rejected_to_toolbar(aldwin_home: Path) -> None:
+    """Rejected key check sets the footer key_rejected flag before prompts."""
+    _ = aldwin_home
+    boot = bootstrap(plain=True)
+    client = FakeClient()
+    seen_rejected: list[bool] = []
+    real = format_toolbar_model_segment
+
+    def _capture(
+        model: str,
+        used_tokens: int = 0,
+        *,
+        todo_label: str | None = None,
+        plain: bool = False,
+        key_rejected: bool = False,
+    ) -> object:
+        seen_rejected.append(key_rejected)
+        return real(
+            model,
+            used_tokens,
+            todo_label=todo_label,
+            plain=plain,
+            key_rejected=key_rejected,
+        )
+
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    with (
+        create_pipe_input() as pipe_in,
+        patch(
+            "aldwin.cli.chat_screen.format_toolbar_model_segment",
+            side_effect=_capture,
+        ),
+    ):
+        pipe_in.send_text("/exit\r")
+        rc = await _run_chat(
+            boot,
+            client=client,
+            console=console,
+            input_dev=pipe_in,
+            key_status="invalid",
+        )
+
+    assert rc == 0
+    assert True in seen_rejected
+
+
+async def test_context_nearly_full_notice_once(aldwin_home: Path) -> None:
+    """After a turn that leaves ≤10% context, print the one-shot notice once."""
+    _ = aldwin_home
+    boot = bootstrap(plain=True)
+    client = FakeClient()
+    # gpt-4o 128k → ~8% left with 117_760 used tokens.
+    client.queue_turn(
+        [
+            DoneEvent(
+                re="r1",
+                reason="answered",
+                usage=TokenUsage(input_tokens=117_760, output_tokens=0),
+            )
+        ]
+    )
+
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    with create_pipe_input() as pipe_in:
+        pipe_in.send_text("fill context\r")
+        pipe_in.send_text("/exit\r")
+        rc = await _run_chat(
+            boot,
+            client=client,
+            console=console,
+            input_dev=pipe_in,
+        )
+
+    assert rc == 0
+    text = console.export_text()
+    assert text.count(CONTEXT_NEARLY_FULL_NOTICE) == 1

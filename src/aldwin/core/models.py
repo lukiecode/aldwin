@@ -24,6 +24,7 @@ ModelErrorCode = Literal[
     "auth_failed",
     "rate_limited",
     "model_unavailable",
+    "unknown_model",
     "internal",
 ]
 
@@ -56,11 +57,11 @@ _NON_CHAT_MARKERS: Final[tuple[str, ...]] = (
     "davinci",
 )
 
-RetryCallback = Callable[[int, int, BaseException], Awaitable[None] | None]
+RetryCallback = Callable[[int, int, BaseException, float], Awaitable[None] | None]
 
 
 class KeyStatus(StrEnum):
-    """Result of validating an OpenAI API key against the models endpoint (`FR-7`)."""
+    """Result of validating an OpenAI API key against the models endpoint."""
 
     OK = "ok"
     INVALID = "invalid"
@@ -87,7 +88,7 @@ async def list_chat_models(
     timeout: float = DEFAULT_KEY_CHECK_TIMEOUT,
     client: openai.AsyncOpenAI | None = None,
 ) -> list[str]:
-    """Fetch OpenAI models accessible to `api_key`, filtered to chat models (`FR-6`).
+    """Fetch OpenAI models accessible to `api_key`, filtered to chat models.
 
     Sorted newest first by `created` timestamp (tie-broken alphabetically by ID).
     """
@@ -134,7 +135,7 @@ async def check_key(
     timeout: float = DEFAULT_KEY_CHECK_TIMEOUT,
     client: openai.AsyncOpenAI | None = None,
 ) -> KeyStatus:
-    """Validate `api_key` via the models list endpoint with a 10 s timeout (`FR-7`)."""
+    """Validate `api_key` via the models list endpoint with a 10 s timeout."""
     cleaned_key = api_key.strip()
     if not cleaned_key:
         return KeyStatus.INVALID
@@ -167,7 +168,7 @@ async def check_key(
 
 
 def is_retryable_model_error(exc: BaseException) -> bool:
-    """Return `True` if `exc` represents a transient OpenAI failure (`FR-8`)."""
+    """Return `True` if `exc` represents a transient OpenAI failure."""
     if isinstance(
         exc,
         (
@@ -205,28 +206,44 @@ def is_retryable_model_error(exc: BaseException) -> bool:
     return False
 
 
-def classify_model_error(exc: BaseException) -> tuple[ModelErrorCode, str]:
-    """Map a model or Agentling exception to `(ModelErrorCode, message)`."""
+def classify_model_error(
+    exc: BaseException,
+    *,
+    model: str | None = None,
+) -> tuple[ModelErrorCode, str]:
+    """Map a model or Agentling exception to `(ModelErrorCode, message)`.
+
+    Protocol codes stay stable (`unknown_model`, `model_unavailable`, …); the
+    CLI maps them to house copy. Optional `model` names the configured model on
+    not-found errors.
+    """
     if isinstance(exc, (openai.AuthenticationError, openai.PermissionDeniedError)):
         return (
             "auth_failed",
             "Your OpenAI key was rejected. Run `aldwin setup` to update it.",
+        )
+    if isinstance(exc, openai.NotFoundError):
+        name = (model or "").strip() or "that model"
+        return (
+            "unknown_model",
+            f"Model {name} isn't available to your key. Pick another with /model.",
         )
     if isinstance(exc, openai.RateLimitError):
         return (
             "rate_limited",
             "OpenAI rate limit reached. Wait a moment and try again.",
         )
-    if isinstance(
-        exc,
-        (
-            openai.APIConnectionError,
-            openai.APITimeoutError,
-            openai.InternalServerError,
-            openai.APIStatusError,
-            ModelError,
-        ),
-    ):
+    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
+        return (
+            "model_unavailable",
+            "Can't reach OpenAI. Check your connection, then press ↑ Enter to retry.",
+        )
+    if isinstance(exc, openai.InternalServerError):
+        return (
+            "rate_limited",
+            "OpenAI is busy right now. Wait a moment and try again.",
+        )
+    if isinstance(exc, openai.APIStatusError):
         text = _redact_text(str(exc)).lower()
         if "401" in text or "authentication" in text or "api key" in text:
             return (
@@ -238,9 +255,42 @@ def classify_model_error(exc: BaseException) -> tuple[ModelErrorCode, str]:
                 "rate_limited",
                 "OpenAI rate limit reached. Wait a moment and try again.",
             )
+        if exc.status_code == 404 or "not found" in text:
+            name = (model or "").strip() or "that model"
+            return (
+                "unknown_model",
+                f"Model {name} isn't available to your key. Pick another with /model.",
+            )
+        if exc.status_code >= 500:
+            return (
+                "rate_limited",
+                "OpenAI is busy right now. Wait a moment and try again.",
+            )
         return (
             "model_unavailable",
-            "OpenAI could not be reached right now. Check your connection and retry.",
+            "Can't reach OpenAI. Check your connection, then press ↑ Enter to retry.",
+        )
+    if isinstance(exc, ModelError):
+        text = _redact_text(str(exc)).lower()
+        if "401" in text or "authentication" in text or "api key" in text:
+            return (
+                "auth_failed",
+                "Your OpenAI key was rejected. Run `aldwin setup` to update it.",
+            )
+        if "429" in text or "rate limit" in text:
+            return (
+                "rate_limited",
+                "OpenAI rate limit reached. Wait a moment and try again.",
+            )
+        if "404" in text or "not found" in text:
+            name = (model or "").strip() or "that model"
+            return (
+                "unknown_model",
+                f"Model {name} isn't available to your key. Pick another with /model.",
+            )
+        return (
+            "model_unavailable",
+            "Can't reach OpenAI. Check your connection, then press ↑ Enter to retry.",
         )
     return (
         "internal",
@@ -248,12 +298,28 @@ def classify_model_error(exc: BaseException) -> tuple[ModelErrorCode, str]:
     )
 
 
+def retry_status_message(
+    exc: BaseException,
+    *,
+    attempt: int,
+    max_retries: int,
+    delay_s: float,
+) -> str:
+    """User-facing retry line for a transient model error (host → StatusEvent)."""
+    delay_label = f"{int(delay_s)}s" if delay_s >= 1 else f"{delay_s:.1f}s"
+    progress = f"({attempt}/{max_retries})"
+    if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
+        return f"No internet connection. Retrying in {delay_label} {progress}…"
+    return f"OpenAI is busy. Retrying in {delay_label} {progress}…"
+
+
 class RetryingModel(Model):
-    """Wraps any Agentling `Model` with exponential-backoff retries (`FR-8`).
+    """Wraps any Agentling `Model` with exponential-backoff retries.
 
     Retries up to `max_retries` times (default 3: `1s, 2s, 4s ± jitter`) on rate
     limits, 5xx responses, and connection/timeout errors before any stream chunk
-    is yielded. Invokes `on_retry(attempt, max_retries, exc)` before each sleep.
+    is yielded. Invokes `on_retry(attempt, max_retries, exc, delay_s)` before each
+    sleep, where `delay_s` is the sleep about to run (including jitter).
     """
 
     def __init__(
@@ -284,7 +350,9 @@ class RetryingModel(Model):
         factor = self._rng(1.0 - self.jitter, 1.0 + self.jitter)
         return max(0.0, nominal * factor)
 
-    async def _notify_retry(self, attempt: int, exc: BaseException) -> None:
+    async def _notify_retry(
+        self, attempt: int, exc: BaseException, delay_s: float
+    ) -> None:
         logger.warning(
             "Model transient error (retrying %d of %d): %s",
             attempt,
@@ -293,7 +361,7 @@ class RetryingModel(Model):
         )
         if self.on_retry is None:
             return
-        result = self.on_retry(attempt, self.max_retries, exc)
+        result = self.on_retry(attempt, self.max_retries, exc, delay_s)
         if inspect.isawaitable(result):
             await result
 
@@ -309,8 +377,9 @@ class RetryingModel(Model):
             except Exception as exc:
                 if not is_retryable_model_error(exc) or attempt >= self.max_retries:
                     raise
-                await self._notify_retry(attempt + 1, exc)
-                await self._sleep(self._compute_delay(attempt))
+                delay_s = self._compute_delay(attempt)
+                await self._notify_retry(attempt + 1, exc, delay_s)
+                await self._sleep(delay_s)
 
         raise RuntimeError("Unexpected retry loop exit.")
 
@@ -334,8 +403,9 @@ class RetryingModel(Model):
                     or attempt >= self.max_retries
                 ):
                     raise
-                await self._notify_retry(attempt + 1, exc)
-                await self._sleep(self._compute_delay(attempt))
+                delay_s = self._compute_delay(attempt)
+                await self._notify_retry(attempt + 1, exc, delay_s)
+                await self._sleep(delay_s)
 
 
 def build_openai_model(

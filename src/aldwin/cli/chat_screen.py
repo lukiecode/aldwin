@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import select
 import sys
 import time
@@ -14,6 +15,7 @@ from types import TracebackType
 from typing import Final, Protocol
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import FormattedText, to_plain_text
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.input import Input, PipeInput, create_input
 from prompt_toolkit.input.typeahead import store_typeahead
@@ -64,6 +66,8 @@ from aldwin.protocol import (
     ToolCallEvent,
     ToolResultEvent,
 )
+
+logger = logging.getLogger("aldwin.cli")
 
 ESCAPE_FLUSH_DELAY: Final[float] = 0.05
 
@@ -179,14 +183,32 @@ def format_toolbar_model_segment(
     *,
     todo_label: str | None = None,
     plain: bool = False,
-) -> str:
-    """Right-side footer: model · context bar · optional todo."""
-    from aldwin.cli.theme import context_bar
+    key_rejected: bool = False,
+) -> FormattedText:
+    """Right-side footer: model · context bar · optional todo / key warning.
+
+    Severity words use `bottom-toolbar.warn` / `.err` so colour matches the word
+    labels (a11y still works when colour is unavailable).
+    """
+    from aldwin.cli.theme import context_bar, context_meter_level
 
     pct = context_left_percent(model, used_tokens)
+    level = context_meter_level(pct)
     bar = context_bar(pct, plain=plain)
     todo_bit = f" · {todo_label}" if todo_label else ""
-    return f"{model} · {bar}{pct}% context left{todo_bit}"
+    fresh_bit = ""
+    if level in ("warn", "err"):
+        fresh_bit = " · /new to start fresh"
+    key_bit = "Key rejected · run aldwin setup · " if key_rejected else ""
+    main = f"{key_bit}{model} · {bar}{pct}% context left{fresh_bit}"
+    fragments: list[tuple[str, str]] = [("", main)]
+    if level == "warn":
+        fragments.append(("class:bottom-toolbar.warn", " · warn"))
+    elif level == "err":
+        fragments.append(("class:bottom-toolbar.err", " · err"))
+    if todo_bit:
+        fragments.append(("", todo_bit))
+    return FormattedText(fragments)
 
 
 def format_bottom_toolbar(
@@ -198,12 +220,19 @@ def format_bottom_toolbar(
     todo_label: str | None = None,
     plain: bool = False,
     left_hint: str | None = None,
+    key_rejected: bool = False,
 ) -> str:
     """Format the bottom status line (left hint + model/context)."""
     _ = session_id
     left = f" {left_hint or '? for shortcuts'} "
-    right = format_toolbar_model_segment(
-        model, used_tokens, todo_label=todo_label, plain=plain
+    right = to_plain_text(
+        format_toolbar_model_segment(
+            model,
+            used_tokens,
+            todo_label=todo_label,
+            plain=plain,
+            key_rejected=key_rejected,
+        )
     )
     if width is not None and width >= len(left) + len(right) + 4:
         gap = width - len(left) - len(right)
@@ -532,7 +561,7 @@ def _create_history(home: Path) -> History:
 def build_prompt_session(
     home: Path,
     *,
-    toolbar_fn: Callable[[], str],
+    toolbar_fn: Callable[[], str | FormattedText],
     plain: bool = False,
     input_dev: Input | None = None,
     output_dev: Output | None = None,
@@ -668,23 +697,37 @@ async def _chat_loop(
     quit_requested = False
     pending_queue: list[QueuedTurn] = []
     restore_draft: str | None = None
+    key_rejected = False
+    context_notice_shown = False
+    key_check_task: asyncio.Task[None] | None = None
 
     def _request_quit() -> None:
         nonlocal quit_requested
         quit_requested = True
 
     def _reset_tokens() -> None:
-        nonlocal last_context_tokens
+        nonlocal last_context_tokens, context_notice_shown
         last_context_tokens = 0
+        context_notice_shown = False
         renderer.clear_todo()
 
-    def _toolbar_right() -> str:
+    def _toolbar_right() -> FormattedText:
         return format_toolbar_model_segment(
             client.model,
             last_context_tokens,
             todo_label=renderer.todo_view.toolbar_label(),
             plain=boot.plain,
+            key_rejected=key_rejected,
         )
+
+    def _maybe_context_notice() -> None:
+        nonlocal context_notice_shown
+        from aldwin.cli.theme import context_meter_level
+
+        pct = context_left_percent(client.model, last_context_tokens)
+        if context_meter_level(pct) == "err" and not context_notice_shown:
+            renderer.render_context_notice()
+            context_notice_shown = True
 
     skill_cache = SkillCache(items=[])
     skill_lexer = SkillLexer(skill_cache)
@@ -721,11 +764,15 @@ async def _chat_loop(
             session.lexer = None
         history_ev = await client.history(limit=20)
         if not skip_welcome:
+            from aldwin.cli.tips import next_tip
+
+            tip = next_tip(boot.home, plain=boot.plain)
             renderer.render_welcome(
                 first_run=False,
                 model=client.model,
                 display_home=boot.display_home,
                 display_workspace=boot.display_workspace or None,
+                tip=tip,
             )
         # Quiet reopen: no transcript dump (use /history). Keep interrupted notice.
         renderer.render_history(
@@ -733,6 +780,25 @@ async def _chat_loop(
             updated_at=client.updated_at,
             show_messages=False,
         )
+
+        async def _background_key_check() -> None:
+            nonlocal key_rejected
+            from aldwin.client import verify_active_openai_key
+
+            try:
+                status = await verify_active_openai_key(boot.home)
+            except Exception:
+                logger.warning("Startup OpenAI key check failed", exc_info=True)
+                return
+            if status in ("invalid", "no_access"):
+                key_rejected = True
+
+        key_check_task = asyncio.create_task(_background_key_check())
+        # Prefer finishing the check before the first prompt so the footer can warn.
+        try:
+            await asyncio.wait_for(asyncio.shield(key_check_task), timeout=2.0)
+        except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+            pass
         if enable_skills:
             try:
                 catalog = await client.skills_list()
@@ -760,6 +826,7 @@ async def _chat_loop(
 
         while not quit_requested:
             session.set_busy(False)
+            _maybe_context_notice()
             if pending_queue:
                 queued = pending_queue.pop(0)
                 user_text = queued.text
@@ -951,5 +1018,11 @@ async def _chat_loop(
         console.print(Text("Saved. See you.", style="muted"))
         return 0
     finally:
+        if key_check_task is not None and not key_check_task.done():
+            key_check_task.cancel()
+            try:
+                await key_check_task
+            except asyncio.CancelledError:
+                pass
         if owns_input:
             input_dev.close()

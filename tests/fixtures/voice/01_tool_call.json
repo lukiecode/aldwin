@@ -1,0 +1,12 @@
+{
+  "id": "voice-01",
+  "title": "Short preface before a tool call",
+  "turns": [
+    {"role": "user", "text": "List the files in this folder."},
+    {
+      "role": "assistant",
+      "text": "I'll list the directory.",
+      "tools": ["list_dir"]
+    }
+  ]
+}

@@ -38,6 +38,7 @@ from aldwin.host.in_process import (
     resolve_workspace_summary,
     sanitize_display_text,
     save_setup,
+    verify_active_openai_key,
 )
 
 if TYPE_CHECKING:
@@ -84,6 +85,7 @@ __all__ = [
     "WorkspaceSummary",
     "bootstrap",
     "check_openai_key",
+    "verify_active_openai_key",
     "get_builtin_tools",
     "get_memory_summary",
     "get_onboarding_status",

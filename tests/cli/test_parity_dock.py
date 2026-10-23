@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from prompt_toolkit.formatted_text import to_plain_text
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.keys import Keys
@@ -33,12 +34,12 @@ def test_placeholder_and_quit_window_constants() -> None:
 
 def test_aldwin_prompt_session_footer_states() -> None:
     session = AldwinPromptSession(footer_right=lambda: "gpt-4o · bar")
-    assert "? for shortcuts" in session._toolbar_text()
+    assert "? for shortcuts" in to_plain_text(session._toolbar_text())
     session.set_busy(True)
-    assert "esc to interrupt" in session._toolbar_text()
+    assert "esc to interrupt" in to_plain_text(session._toolbar_text())
     session.set_busy(False)
     session.set_footer("ctrl_c", left="Press Ctrl-C again to exit")
-    assert "Press Ctrl-C again to exit" in session._toolbar_text()
+    assert "Press Ctrl-C again to exit" in to_plain_text(session._toolbar_text())
 
 
 def test_slash_completions_menu_replaces_default() -> None:

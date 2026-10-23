@@ -33,15 +33,18 @@ def test_welcome_and_header_rendering() -> None:
     renderer = ChatRenderer(console)
 
     renderer.render_welcome(first_run=True, model="gpt-4o", display_home="~/.aldwin")
-    renderer.render_welcome(first_run=False, model="gpt-4o", display_home="~/.aldwin")
+    renderer.render_welcome(
+        first_run=False,
+        model="gpt-4o",
+        display_home="~/.aldwin",
+        tip='Try: "what can you do?"  ·  /help  ·  Esc stops an answer',
+    )
 
     text = console.export_text()
     assert "Welcome to Aldwin" in text
     assert "A personal assistant that runs on your computer." in text
     assert "Aldwin · gpt-4o · ~/.aldwin" in text
-    assert (
-        'Try: "what can you do?"  ·  /help  ·  /history  ·  Esc stops an answer' in text
-    )
+    assert 'Try: "what can you do?"' in text
 
 
 def test_dimmed_history_and_divider() -> None:
@@ -203,7 +206,7 @@ def test_each_error_code_copy() -> None:
         ("auth_failed", "Your OpenAI key was rejected. Run `aldwin setup`."),
         ("rate_limited", "OpenAI is rate-limiting requests right now."),
         ("model_unavailable", "Can't reach OpenAI. Check your connection"),
-        ("unknown_model", "Use /model to pick another."),
+        ("unknown_model", "Pick another with /model."),
         ("busy", "Press Esc to stop it first."),
         ("internal", "Something went wrong. Details are in ~/.aldwin/logs/aldwin.log"),
     ]

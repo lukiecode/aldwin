@@ -6,6 +6,7 @@ import asyncio
 from io import StringIO
 
 import pytest
+from prompt_toolkit.formatted_text import to_plain_text
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
@@ -28,7 +29,9 @@ def test_toolbar_formatters() -> None:
     assert "gpt-4o" in wide
     narrow = format_bottom_toolbar("gpt-4o", "sess", 1000, width=20)
     assert "gpt-4o" in narrow
-    seg = format_toolbar_model_segment("gpt-4o", 500, todo_label="1/2", plain=True)
+    seg = to_plain_text(
+        format_toolbar_model_segment("gpt-4o", 500, todo_label="1/2", plain=True)
+    )
     assert "gpt-4o" in seg
 
 

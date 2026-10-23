@@ -33,7 +33,7 @@ async def _collect(client: AldwinClient, text: str) -> list[Event]:
 async def test_host_emits_retry_status_events_then_answers(
     aldwin_home: Path,
 ) -> None:
-    """TC-09: Two 429 errors emit two `StatusEvent`s before the streamed answer."""
+    """Two 429 errors emit two `StatusEvent`s before the streamed answer."""
     ensure_home(aldwin_home)
     err_429 = openai.RateLimitError(
         "Rate limit reached",
@@ -52,7 +52,9 @@ async def test_host_emits_retry_status_events_then_answers(
         return None
 
     def builder(model_name: str, ask: AskFn) -> Any:
-        retrying = RetryingModel(fake_model, max_retries=3, sleep=zero_sleep)
+        retrying = RetryingModel(
+            fake_model, max_retries=3, sleep=zero_sleep, jitter=0.0
+        )
         return build_agent(
             AldwinConfig(model=model_name),
             SecretsConfig(),
@@ -72,8 +74,8 @@ async def test_host_emits_retry_status_events_then_answers(
 
         statuses = [ev.message for ev in events if isinstance(ev, StatusEvent)]
         assert statuses == [
-            "OpenAI is busy, retrying (1 of 3)…",
-            "OpenAI is busy, retrying (2 of 3)…",
+            "OpenAI is busy. Retrying in 1s (1/3)…",
+            "OpenAI is busy. Retrying in 2s (2/3)…",
         ]
         texts = [ev.delta for ev in events if isinstance(ev, TextEvent)]
         assert texts == ["Recovered answer."]
@@ -84,10 +86,63 @@ async def test_host_emits_retry_status_events_then_answers(
         await host.stop_host()
 
 
-async def test_host_emits_3_retry_statuses_then_model_unavailable_on_503(
+async def test_host_emits_retry_statuses_on_connection_errors(
     aldwin_home: Path,
 ) -> None:
-    """TC-10: Three failed retries on 503 emit 3 `StatusEvent`s then `ErrorEvent`."""
+    """Connection failures emit 'No internet' status lines then model_unavailable."""
+    ensure_home(aldwin_home)
+    req = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    err_conn = openai.APIConnectionError(request=cast(Any, req))
+    fake_model = FakeModel(
+        turns=[
+            FakeTurn.error(err_conn),
+            FakeTurn.error(err_conn),
+            FakeTurn.error(err_conn),
+            FakeTurn.error(err_conn),
+        ]
+    )
+
+    async def zero_sleep(_delay: float) -> None:
+        return None
+
+    def builder(model_name: str, ask: AskFn) -> Any:
+        retrying = RetryingModel(
+            fake_model, max_retries=3, sleep=zero_sleep, jitter=0.0
+        )
+        return build_agent(
+            AldwinConfig(model=model_name),
+            SecretsConfig(),
+            ask,
+            home=aldwin_home,
+            model=retrying,
+        )
+
+    transport = InProcessTransport()
+    host = AldwinHost(transport, agent_builder=builder)
+    await host.start()
+    client = AldwinClient(transport.connect())
+
+    try:
+        await client.connect()
+        events = await _collect(client, "Hello")
+
+        statuses = [ev.message for ev in events if isinstance(ev, StatusEvent)]
+        assert statuses == [
+            "No internet connection. Retrying in 1s (1/3)…",
+            "No internet connection. Retrying in 2s (2/3)…",
+            "No internet connection. Retrying in 4s (3/3)…",
+        ]
+        assert isinstance(events[-1], ErrorEvent)
+        assert events[-1].code == "model_unavailable"
+    finally:
+        await client.close()
+        await host.stop_host()
+
+
+async def test_host_emits_3_retry_statuses_then_rate_limited_on_503(
+    aldwin_home: Path,
+) -> None:
+    """Three failed retries on 503 emit busy status then rate_limited."""
     ensure_home(aldwin_home)
     err_503 = openai.InternalServerError(
         "Service unavailable",
@@ -107,7 +162,9 @@ async def test_host_emits_3_retry_statuses_then_model_unavailable_on_503(
         return None
 
     def builder(model_name: str, ask: AskFn) -> Any:
-        retrying = RetryingModel(fake_model, max_retries=3, sleep=zero_sleep)
+        retrying = RetryingModel(
+            fake_model, max_retries=3, sleep=zero_sleep, jitter=0.0
+        )
         return build_agent(
             AldwinConfig(model=model_name),
             SecretsConfig(),
@@ -127,12 +184,13 @@ async def test_host_emits_3_retry_statuses_then_model_unavailable_on_503(
 
         statuses = [ev.message for ev in events if isinstance(ev, StatusEvent)]
         assert statuses == [
-            "OpenAI is busy, retrying (1 of 3)…",
-            "OpenAI is busy, retrying (2 of 3)…",
-            "OpenAI is busy, retrying (3 of 3)…",
+            "OpenAI is busy. Retrying in 1s (1/3)…",
+            "OpenAI is busy. Retrying in 2s (2/3)…",
+            "OpenAI is busy. Retrying in 4s (3/3)…",
         ]
         assert isinstance(events[-1], ErrorEvent)
-        assert events[-1].code == "model_unavailable"
+        assert events[-1].code == "rate_limited"
+        assert "busy" in (events[-1].message or "").lower()
     finally:
         await client.close()
         await host.stop_host()
@@ -141,7 +199,7 @@ async def test_host_emits_3_retry_statuses_then_model_unavailable_on_503(
 async def test_host_core_context_and_model_switch_end_to_end(
     aldwin_home: Path,
 ) -> None:
-    """TC-11: End-to-end `AldwinHost` + `build_agent` switches model cleanly."""
+    """End-to-end `AldwinHost` + `build_agent` switches model cleanly."""
     ensure_home(aldwin_home)
     models_by_name: dict[str, FakeModel] = {
         "gpt-4o": FakeModel(turns=[FakeTurn.text(["Hello Fola from 4o"])]),

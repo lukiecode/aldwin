@@ -142,6 +142,9 @@ def test_cli_subcommands_stub_output(
     )
     assert setup_res.exit_code == 0, setup_res.output
 
+    import aldwin.cli.install_detect as detect_mod
+
+    monkeypatch.setattr(detect_mod, "detect_install_method", lambda: "pip")
     uninstall_res = runner.invoke(
         app,
         ["uninstall", "--purge"],

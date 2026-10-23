@@ -40,6 +40,7 @@ from aldwin.host.in_process import (
     purge_home_data,
     resolve_workspace_summary,
     save_setup,
+    verify_active_openai_key,
 )
 from aldwin.protocol import (
     MIN_SUPPORTED_VERSION,
@@ -415,6 +416,7 @@ __all__ = [
     "WorkspaceSummary",
     "bootstrap",
     "check_openai_key",
+    "verify_active_openai_key",
     "get_builtin_tools",
     "get_memory_summary",
     "get_onboarding_status",

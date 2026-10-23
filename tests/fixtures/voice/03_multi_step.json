@@ -1,0 +1,12 @@
+{
+  "id": "voice-03",
+  "title": "Plan then tools without filler",
+  "turns": [
+    {"role": "user", "text": "Find TODOs and fix the first one."},
+    {
+      "role": "assistant",
+      "text": "I'll search for TODOs, then edit the first match.",
+      "tools": ["grep", "edit_file"]
+    }
+  ]
+}

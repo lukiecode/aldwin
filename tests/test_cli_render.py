@@ -273,11 +273,28 @@ def test_render_error_codes_map_to_house_copy() -> None:
     text = console.export_text()
     assert "Your OpenAI key was rejected. Run `aldwin setup`." in text
     assert "OpenAI is rate-limiting requests right now." in text
-    assert "Can't reach OpenAI. Check your connection and try again." in text
-    assert "Use /model to pick another." in text
+    assert (
+        "Can't reach OpenAI. Check your connection, then press ↑ Enter to retry."
+        in text
+    )
+    assert "Pick another with /model." in text
     assert "Press Esc to stop it first." in text
     assert "Something went wrong. Details are in ~/.aldwin/logs/aldwin.log" in text
     assert "Traceback" not in text
+
+
+def test_render_error_prefers_host_busy_copy_for_rate_limited() -> None:
+    """503-style host messages keep 'busy' wording instead of rate-limit house copy."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+    renderer.render_error(
+        "rate_limited",
+        "OpenAI is busy right now. Wait a moment and try again.",
+    )
+    text = console.export_text()
+    assert "OpenAI is busy right now." in text
+    assert "rate-limiting" not in text
 
 
 def test_plain_mode_has_no_ansi_spinner_live_or_bell() -> None:
@@ -345,11 +362,13 @@ def test_turn_renderer_status_ticker_retry_notice_and_max_steps() -> None:
     now = 12.4
     assert turn.format_status_line() == "(12s · ↓ … tokens · esc to interrupt)"
 
-    turn.on_status("OpenAI is busy, retrying (2 of 3)…")
+    turn.on_status("OpenAI is busy. Retrying in 2s (2/3)…")
+    assert turn._retry_status == "OpenAI is busy. Retrying in 2s (2/3)…"
     turn.finish_done(DoneEvent(re="r1", reason="max_steps"))
 
     text = console.export_text()
-    assert "OpenAI is busy, retrying (2 of 3)…" in text
+    # In-place Live status is not stacked as permanent scrollback lines.
+    assert text.count("OpenAI is busy. Retrying") == 0
     assert "Stopped after 15 steps. Say continue to keep going." in text
 
 

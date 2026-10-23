@@ -9,6 +9,7 @@ import httpx
 import openai
 import pytest
 from agentling import ChatMessage, Delta
+from agentling.errors import ModelError
 from fakes.model import FakeModel, FakeTurn
 
 from aldwin.core.models import (
@@ -19,7 +20,9 @@ from aldwin.core.models import (
     check_key,
     classify_model_error,
     is_chat_model,
+    is_retryable_model_error,
     list_chat_models,
+    retry_status_message,
 )
 
 
@@ -59,7 +62,7 @@ def _http_response(status_code: int) -> httpx.Response:
 
 
 async def test_check_key_statuses() -> None:
-    """TC-08: `check_key` returns `invalid`, `no_access`, `network_error`, and `ok`."""
+    """`check_key` returns `invalid`, `no_access`, `network_error`, and `ok`."""
     assert await check_key("") == KeyStatus.INVALID
     assert await check_key("   ") == KeyStatus.INVALID
 
@@ -110,7 +113,7 @@ async def test_check_key_statuses() -> None:
 
 
 async def test_list_chat_models_filters_non_chat_and_sorts_newest_first() -> None:
-    """TC-17: `list_chat_models` excludes non-chat models and sorts newest first."""
+    """`list_chat_models` excludes non-chat models and sorts newest first."""
     page = _StubModelPage(
         data=[
             _StubModelEntry(id="gpt-4o", created=200),
@@ -138,7 +141,7 @@ async def test_list_chat_models_filters_non_chat_and_sorts_newest_first() -> Non
 
 
 async def test_retrying_model_retries_429_twice_then_succeeds() -> None:
-    """TC-09: Model call failing twice with 429 emits 2 retry statuses then succeeds."""
+    """Model call failing twice with 429 emits 2 retry statuses then succeeds."""
     err_429 = openai.RateLimitError(
         "Rate limit reached",
         response=cast(Any, _http_response(429)),
@@ -151,11 +154,13 @@ async def test_retrying_model_retries_429_twice_then_succeeds() -> None:
             FakeTurn.text(["Hello ", "world"]),
         ]
     )
-    recorded_retries: list[tuple[int, int, type[BaseException]]] = []
+    recorded_retries: list[tuple[int, int, type[BaseException], float]] = []
     recorded_sleeps: list[float] = []
 
-    async def on_retry(attempt: int, max_retries: int, exc: BaseException) -> None:
-        recorded_retries.append((attempt, max_retries, type(exc)))
+    async def on_retry(
+        attempt: int, max_retries: int, exc: BaseException, delay_s: float
+    ) -> None:
+        recorded_retries.append((attempt, max_retries, type(exc), delay_s))
 
     async def fake_sleep(delay: float) -> None:
         recorded_sleeps.append(delay)
@@ -175,17 +180,18 @@ async def test_retrying_model_retries_429_twice_then_succeeds() -> None:
 
     assert [d.content for d in deltas if d.content] == ["Hello ", "world"]
     assert len(fake.calls) == 3
-    assert recorded_retries == [
-        (1, 3, openai.RateLimitError),
-        (2, 3, openai.RateLimitError),
-    ]
+    assert len(recorded_retries) == 2
+    assert recorded_retries[0][:3] == (1, 3, openai.RateLimitError)
+    assert recorded_retries[1][:3] == (2, 3, openai.RateLimitError)
     assert len(recorded_sleeps) == 2
     assert 0.8 <= recorded_sleeps[0] <= 1.2
     assert 1.6 <= recorded_sleeps[1] <= 2.4
+    assert recorded_retries[0][3] == recorded_sleeps[0]
+    assert recorded_retries[1][3] == recorded_sleeps[1]
 
 
 async def test_retrying_model_exhausts_3_retries_on_503() -> None:
-    """TC-10: Model failing 4 times (initial + 3 retries) with 503 raises on 4th."""
+    """Model failing 4 times (initial + 3 retries) with 503 raises on 4th."""
     err_503 = openai.InternalServerError(
         "Service unavailable",
         response=cast(Any, _http_response(503)),
@@ -202,7 +208,9 @@ async def test_retrying_model_exhausts_3_retries_on_503() -> None:
     retry_attempts: list[tuple[int, int]] = []
     sleeps: list[float] = []
 
-    def on_retry(attempt: int, max_retries: int, _exc: BaseException) -> None:
+    def on_retry(
+        attempt: int, max_retries: int, _exc: BaseException, _delay_s: float
+    ) -> None:
         retry_attempts.append((attempt, max_retries))
 
     async def fake_sleep(delay: float) -> None:
@@ -225,12 +233,12 @@ async def test_retrying_model_exhausts_3_retries_on_503() -> None:
     assert retry_attempts == [(1, 3), (2, 3), (3, 3)]
     assert sleeps == [1.0, 2.0, 4.0]
     code, msg = classify_model_error(err_503)
-    assert code == "model_unavailable"
-    assert "connection" in msg.lower()
+    assert code == "rate_limited"
+    assert "busy" in msg.lower()
 
 
 async def test_retrying_model_never_retries_auth_or_mid_stream_failure() -> None:
-    """TC-18: Auth errors (401) and mid-stream failures after a chunk do not retry."""
+    """Auth errors (401) and mid-stream failures after a chunk do not retry."""
     err_401 = openai.AuthenticationError(
         "Invalid key sk-proj-secretkeyvalue123456",
         response=cast(Any, _http_response(401)),
@@ -239,7 +247,9 @@ async def test_retrying_model_never_retries_auth_or_mid_stream_failure() -> None
     fake_auth = FakeModel(turns=[FakeTurn.error(err_401)])
     retries_called = 0
 
-    def on_retry(_attempt: int, _max: int, _exc: BaseException) -> None:
+    def on_retry(
+        _attempt: int, _max: int, _exc: BaseException, _delay_s: float
+    ) -> None:
         nonlocal retries_called
         retries_called += 1
 
@@ -255,6 +265,16 @@ async def test_retrying_model_never_retries_auth_or_mid_stream_failure() -> None
     code, message = classify_model_error(err_401)
     assert code == "auth_failed"
     assert "sk-proj-secretkeyvalue123456" not in message
+
+    err_404 = openai.NotFoundError(
+        "The model `gpt-does-not-exist` does not exist",
+        response=cast(Any, _http_response(404)),
+        body=None,
+    )
+    code_404, msg_404 = classify_model_error(err_404, model="gpt-does-not-exist")
+    assert code_404 == "unknown_model"
+    assert "gpt-does-not-exist" in msg_404
+    assert "/model" in msg_404
 
     # Mid-stream failure after yielding one Delta must not retry from scratch.
     class _MidStreamFailingModel(FakeModel):
@@ -277,9 +297,97 @@ async def test_retrying_model_never_retries_auth_or_mid_stream_failure() -> None
 
 
 def test_openai_model_disables_inner_sdk_retries() -> None:
-    """TC-19: `build_openai_model` disables inner `OpenAIModel` and SDK retries."""
+    """`build_openai_model` disables inner `OpenAIModel` and SDK retries."""
     wrapped = build_openai_model("gpt-4o", "sk-test-key-12345678")
     assert wrapped.max_retries == 3
     inner = cast(Any, wrapped.inner)
     assert inner.max_retries == 0
     assert inner.client.max_retries == 0
+
+
+def test_classify_api_status_error_with_model_word_is_not_unknown_model() -> None:
+    """A 400 whose body mentions 'model' must not map to unknown_model."""
+    err = openai.APIStatusError(
+        "Invalid model parameter for this endpoint",
+        response=cast(Any, _http_response(400)),
+        body=None,
+    )
+    code, msg = classify_model_error(err, model="gpt-4o")
+    assert code == "model_unavailable"
+    assert "/model" not in msg
+
+
+def test_retry_status_message_connection_vs_busy() -> None:
+    """Connection failures say no internet; other transients say busy."""
+    conn = openai.APIConnectionError(
+        request=cast(Any, httpx.Request("GET", "https://api.openai.com")),
+    )
+    assert "No internet connection" in retry_status_message(
+        conn, attempt=1, max_retries=3, delay_s=1.0
+    )
+    busy = openai.InternalServerError(
+        "Service unavailable",
+        response=cast(Any, _http_response(503)),
+        body=None,
+    )
+    line = retry_status_message(busy, attempt=2, max_retries=3, delay_s=2.0)
+    assert "OpenAI is busy" in line
+    assert "(2/3)" in line
+    assert "2s" in line
+
+
+def test_is_retryable_covers_status_and_model_error() -> None:
+    """APIStatusError and ModelError retry heuristics match status / tokens."""
+    assert is_retryable_model_error(
+        openai.APIStatusError("x", response=cast(Any, _http_response(429)), body=None)
+    )
+    assert is_retryable_model_error(
+        openai.APIStatusError("x", response=cast(Any, _http_response(502)), body=None)
+    )
+    assert not is_retryable_model_error(
+        openai.APIStatusError("x", response=cast(Any, _http_response(400)), body=None)
+    )
+    assert is_retryable_model_error(ModelError("transient upstream timeout"))
+    assert not is_retryable_model_error(ModelError("permanent failure"))
+    assert not is_retryable_model_error(ValueError("nope"))
+
+
+def test_classify_api_status_and_model_error_branches() -> None:
+    """Cover auth, rate limit, 404, 5xx, and ModelError mappings."""
+    auth = openai.APIStatusError(
+        "authentication failed for api key",
+        response=cast(Any, _http_response(401)),
+        body=None,
+    )
+    assert classify_model_error(auth)[0] == "auth_failed"
+
+    rate = openai.APIStatusError(
+        "rate limit exceeded",
+        response=cast(Any, _http_response(429)),
+        body=None,
+    )
+    assert classify_model_error(rate)[0] == "rate_limited"
+
+    missing = openai.APIStatusError(
+        "model not found",
+        response=cast(Any, _http_response(404)),
+        body=None,
+    )
+    code_404, msg_404 = classify_model_error(missing, model="ghost")
+    assert code_404 == "unknown_model"
+    assert "ghost" in msg_404
+
+    server = openai.APIStatusError(
+        "bad gateway",
+        response=cast(Any, _http_response(502)),
+        body=None,
+    )
+    assert classify_model_error(server)[0] == "rate_limited"
+
+    assert classify_model_error(ModelError("401 authentication"))[0] == "auth_failed"
+    assert classify_model_error(ModelError("429 rate limit"))[0] == "rate_limited"
+    code_me, msg_me = classify_model_error(ModelError("404 not found"), model="ghost-2")
+    assert code_me == "unknown_model"
+    assert "ghost-2" in msg_me
+    assert classify_model_error(ModelError("other"))[0] == "model_unavailable"
+    assert classify_model_error(RuntimeError("boom"))[0] == "internal"

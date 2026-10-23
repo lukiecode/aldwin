@@ -40,6 +40,7 @@ from aldwin.host.in_process import (
     resolve_workspace_summary,
     sanitize_display_text,
     save_setup,
+    verify_active_openai_key,
 )
 
 if TYPE_CHECKING:
@@ -124,6 +125,7 @@ __all__ = [
     "WorkspaceSummary",
     "bootstrap_host",
     "check_openai_key",
+    "verify_active_openai_key",
     "classify_turn_error",
     "derive_session_title",
     "format_args_preview",

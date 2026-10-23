@@ -65,7 +65,7 @@ async def test_slash_model_numbered_list_and_switch() -> None:
         renderer=renderer,
         prompt_line=_noop_prompt,
     )
-    assert "Use /model to pick another." in console.export_text()
+    assert "Pick another with /model." in console.export_text()
 
     # Cancel on Enter and invalid number selection
     await handle_slash_command(
