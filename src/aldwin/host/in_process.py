@@ -183,9 +183,16 @@ def save_setup(
     openai_api_key: str | None = None,
     tavily_api_key: str | None = None,
     model: str | None = None,
+    theme: str | None = None,
+    last_seen_version: str | None = None,
     home: Path | None = None,
 ) -> None:
-    """Persist updated API keys to `secrets.yaml` and model to `config.yaml`."""
+    """Persist API keys, model, theme, and last_seen_version to the home folder."""
+    from aldwin.core.settings import (
+        update_config_last_seen_version,
+        update_config_theme,
+    )
+
     root = (home if home is not None else home_dir()).expanduser().resolve()
     ensure_home(root)
 
@@ -201,6 +208,14 @@ def save_setup(
     model_clean = (model or "").strip()
     if model_clean:
         update_config_model(model_clean, root)
+
+    theme_clean = (theme or "").strip()
+    if theme_clean:
+        update_config_theme(theme_clean, root)
+
+    version_clean = (last_seen_version or "").strip()
+    if version_clean:
+        update_config_last_seen_version(version_clean, root)
 
 
 def get_skills_report(home: Path | None = None) -> SkillsReport:

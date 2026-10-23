@@ -13,7 +13,7 @@ from aldwin.client import sanitize_display_text
 from aldwin.protocol import TodoItem, TodoStatus, TodoUpdatedEvent
 
 UNICODE_MARKERS: Final[dict[TodoStatus, str]] = {
-    "done": "✔",
+    "done": "☑",
     "in_progress": "▶",
     "pending": "☐",
     "dropped": "✘",
@@ -91,15 +91,16 @@ def render_todo_block(
         clean = sanitize_display_text(item.text)
         row = Text("  ")
         if item.status == "done":
+            # Done: filled accent checkmark, strikethrough, reduced opacity.
             if plain:
                 row.append(f"{marker} ")
                 row.append(clean)
             elif use_unicode:
-                row.append(f"{marker} ", style="muted")
-                row.append(clean, style="muted strike")
+                row.append(f"{marker} ", style="accent dim")
+                row.append(clean, style="muted strike dim")
             else:
-                row.append(f"{marker} ", style="muted")
-                row.append(clean, style="muted")
+                row.append(f"{marker} ", style="accent dim")
+                row.append(clean, style="muted dim")
         elif item.status == "in_progress":
             if plain:
                 row.append(f"{marker} ")

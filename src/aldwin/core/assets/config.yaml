@@ -4,8 +4,11 @@
 # Default OpenAI chat model (change any time in chat with /model)
 model: gpt-4o
 
-# Terminal display theme: "default" or "plain"
-theme: default
+# Terminal display theme: auto | dark | light | colour_blind | plain
+theme: dark
+
+# Last Aldwin version that showed upgrade What's new (set automatically)
+# last_seen_version: 0.0.2
 
 # Context and turn limits
 limits:

@@ -1,4 +1,4 @@
-"""First-run onboarding and interactive `aldwin setup` workflow (`FR-1`, `FR-2`)."""
+"""First-run onboarding and interactive `aldwin setup` workflow."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from rich.console import Console
 from rich.status import Status
 from rich.text import Text
 
-from aldwin.cli.render import TIPS_LINE, ChatRenderer
+from aldwin.cli.render import ChatRenderer
 from aldwin.cli.theme import PROMPT_STYLE, filter_canonical_models
 from aldwin.client import (
     BootstrapResult,
@@ -113,7 +113,7 @@ async def _prompt_and_verify_openai_key(
     prompt_label: str = "OpenAI API key (input hidden): ",
     allow_empty_keep: bool = False,
 ) -> tuple[bool, str | None]:
-    """Prompt up to 3 times for an OpenAI API key and validate it (`FR-2`).
+    """Prompt up to 3 times for an OpenAI API key and validate it.
 
     Returns `(succeeded, verified_key_or_none_if_kept)`.
     """
@@ -171,7 +171,7 @@ async def run_onboarding(
     prompt_fn: PromptCallable | None = None,
     key_checker: KeyCheckerCallable | None = None,
 ) -> bool:
-    """Run the first-run onboarding wizard (`FR-2`, `TC-02`, `TC-16`).
+    """Run the first-run onboarding wizard.
 
     Skipped automatically if `OPENAI_API_KEY` is set in the environment and valid.
     Returns `True` when onboarding completes (or is skipped), or `False` after
@@ -200,12 +200,28 @@ async def run_onboarding(
             Text(f"OPENAI_API_KEY in environment failed: {err_msg}", style="err")
         )
 
-    renderer = ChatRenderer(console, plain=boot.plain)
-    renderer.render_welcome(
-        first_run=True,
-        model=boot.model,
-        display_home=boot.display_home,
+    from aldwin.cli.brand import (
+        ALDWIN_WORDMARK,
+        ALDWIN_WORDMARK_ONE_LINE,
+        PRIMER_LINES,
+        TAGLINE,
     )
+    from aldwin.cli.theme import should_show_wordmark_splash
+
+    # Short wordmark + one-screen primer, then minimal key setup.
+    # Timed column reveal is skipped under plain / narrow / reduced-motion.
+    width = console.width or 80
+    show_art = should_show_wordmark_splash(plain=boot.plain, width=width)
+    if boot.plain or not console.is_interactive or not show_art:
+        console.print(Text(ALDWIN_WORDMARK_ONE_LINE, style="accent"))
+        console.print(Text(TAGLINE, style="muted"))
+    else:
+        for line in ALDWIN_WORDMARK:
+            console.print(Text(line, style="accent"))
+        console.print(Text(TAGLINE, style="muted"))
+    console.print()
+    for line in PRIMER_LINES:
+        console.print(Text(line, style="fg"))
     console.print()
 
     ok, verified_openai_key = await _prompt_and_verify_openai_key(
@@ -250,7 +266,6 @@ async def run_onboarding(
             Text(f"Created {boot.display_home}", style="muted"),
             soft_wrap=True,
         )
-    console.print(Text(TIPS_LINE, style="muted"))
     console.print()
     return True
 
@@ -277,7 +292,7 @@ async def run_setup(
     key_checker: KeyCheckerCallable | None = None,
     model_lister: ModelListerCallable | None = None,
 ) -> bool:
-    """Run interactive `aldwin setup` to configure keys and default model (`FR-1`)."""
+    """Run interactive `aldwin setup` to configure keys and default model."""
     active_prompt = prompt_fn or _default_prompt
     active_checker = key_checker or check_openai_key
     active_lister = model_lister or list_available_models

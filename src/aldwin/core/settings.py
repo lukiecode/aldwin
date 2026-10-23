@@ -18,6 +18,7 @@ from pydantic import (
     SecretStr,
     StrictInt,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -32,7 +33,7 @@ KeySource = Literal["env", "file", "missing"]
 
 _EXPECTED_FIELD_TYPES: Final[dict[str, str]] = {
     "model": "a non-empty string",
-    "theme": "'default' or 'plain'",
+    "theme": "'auto', 'dark', 'light', 'colour_blind', or 'plain'",
     "limits": "a mapping of limit settings",
     "limits.context_exchanges": "an integer >= 1",
     "limits.profile_chars": "an integer >= 100",
@@ -88,15 +89,32 @@ class RunCommandConfig(BaseModel):
     env_allow: list[str] = Field(default_factory=list)
 
 
+ThemeName = Literal["auto", "dark", "light", "colour_blind", "plain"]
+
+
 class AldwinConfig(BaseModel):
     """Top-level user configuration from ``~/.aldwin/config.yaml``."""
 
     model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
     model: str = Field(default="gpt-4o", min_length=1)
-    theme: Literal["default", "plain"] = "default"
+    theme: ThemeName = "dark"
+    last_seen_version: str | None = None
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     run_command: RunCommandConfig = Field(default_factory=RunCommandConfig)
+
+    @field_validator("theme", mode="before")
+    @classmethod
+    def _normalize_theme(cls, value: object) -> object:
+        """Accept 0.0.1 ``default`` and US spelling ``color_blind``."""
+        if not isinstance(value, str):
+            return value
+        cleaned = value.strip().lower().replace("-", "_")
+        if cleaned in {"default", ""}:
+            return "dark"
+        if cleaned == "color_blind":
+            return "colour_blind"
+        return cleaned
 
 
 def mask_secret(value: str | SecretStr | None) -> str:
@@ -330,6 +348,29 @@ def load_config(home: Path | None = None) -> AldwinConfig:
     return cfg
 
 
+def _read_config_source(config_path: Path) -> str:
+    """Return existing ``config.yaml`` text or the packaged default."""
+    if config_path.exists():
+        return config_path.read_text(encoding="utf-8")
+    return (
+        files("aldwin.core.assets")
+        .joinpath(CONFIG_FILENAME)
+        .read_text(encoding="utf-8")
+    )
+
+
+def _set_yaml_scalar_key(source: str, key: str, value: str) -> str:
+    """Replace or append a top-level scalar ``key: value`` while keeping comments."""
+    serialized = yaml.safe_dump(value, default_style=None).strip()
+    if serialized.endswith("\n..."):
+        serialized = serialized[:-4].strip()
+    pattern = re.compile(rf"(?m)^(\s*{re.escape(key)}\s*:\s*).*$")
+    if pattern.search(source):
+        return pattern.sub(lambda m: f"{m.group(1)}{serialized}", source, count=1)
+    sep = "" if source.endswith("\n") or not source else "\n"
+    return f"{source}{sep}{key}: {serialized}\n"
+
+
 def update_config_model(model: str, home: Path | None = None) -> None:
     """Update the ``model`` setting in ``config.yaml`` while preserving comments."""
     cleaned = model.strip()
@@ -343,28 +384,41 @@ def update_config_model(model: str, home: Path | None = None) -> None:
             expected="a non-empty string",
         )
 
-    if config_path.exists():
-        source = config_path.read_text(encoding="utf-8")
-    else:
-        source = (
-            files("aldwin.core.assets")
-            .joinpath(CONFIG_FILENAME)
-            .read_text(encoding="utf-8")
+    updated = _set_yaml_scalar_key(_read_config_source(config_path), "model", cleaned)
+    atomic_write(config_path, updated, mode=FILE_MODE)
+
+
+def update_config_theme(theme: str, home: Path | None = None) -> None:
+    """Update the ``theme`` setting in ``config.yaml`` while preserving comments."""
+    root = (home if home is not None else home_dir()).expanduser().resolve()
+    config_path = root / CONFIG_FILENAME
+    try:
+        validated = AldwinConfig.model_validate({"theme": theme}).theme
+    except ValidationError as exc:
+        raise ConfigError(
+            file=config_path,
+            field="theme",
+            expected=_EXPECTED_FIELD_TYPES["theme"],
+            detail=str(exc.errors()[0].get("msg", "")),
+        ) from None
+    updated = _set_yaml_scalar_key(_read_config_source(config_path), "theme", validated)
+    atomic_write(config_path, updated, mode=FILE_MODE)
+
+
+def update_config_last_seen_version(version: str, home: Path | None = None) -> None:
+    """Persist ``last_seen_version`` for upgrade-once What's new / splash gates."""
+    cleaned = version.strip()
+    root = (home if home is not None else home_dir()).expanduser().resolve()
+    config_path = root / CONFIG_FILENAME
+    if not cleaned:
+        raise ConfigError(
+            file=config_path,
+            field="last_seen_version",
+            expected="a non-empty version string",
         )
-
-    serialized_model = yaml.safe_dump(cleaned, default_style=None).strip()
-    if serialized_model.endswith("\n..."):
-        serialized_model = serialized_model[:-4].strip()
-
-    pattern = re.compile(r"(?m)^(\s*model\s*:\s*).*$")
-    if pattern.search(source):
-        updated = pattern.sub(
-            lambda m: f"{m.group(1)}{serialized_model}", source, count=1
-        )
-    else:
-        sep = "" if source.endswith("\n") or not source else "\n"
-        updated = f"{source}{sep}model: {serialized_model}\n"
-
+    updated = _set_yaml_scalar_key(
+        _read_config_source(config_path), "last_seen_version", cleaned
+    )
     atomic_write(config_path, updated, mode=FILE_MODE)
 
 

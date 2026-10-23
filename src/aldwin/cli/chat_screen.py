@@ -8,6 +8,7 @@ import sys
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Sequence
 from contextlib import AbstractAsyncContextManager, ExitStack, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
 from typing import Final, Protocol
@@ -16,27 +17,29 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.input import Input, PipeInput, create_input
 from prompt_toolkit.input.typeahead import store_typeahead
-from prompt_toolkit.key_binding import KeyBindings, KeyPress, KeyPressEvent
+from prompt_toolkit.key_binding import KeyPress
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput, Output
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
-from rich.rule import Rule
 from rich.text import Text
 
 from aldwin.cli.commands import (
     SlashCommandClient,
     handle_slash_command,
-    render_shortcuts,
 )
 from aldwin.cli.completion import RefreshableCompleter, build_chat_completer
+from aldwin.cli.dock import CTRL_C_QUIT_WINDOW_S, PLACEHOLDER, AldwinPromptSession
+from aldwin.cli.paste import PasteStore
 from aldwin.cli.render import ChatRenderer
 from aldwin.cli.skill_completer import SkillCache, SkillLexer, extract_skill_tokens
 from aldwin.cli.theme import (
     PLAIN_PROMPT_STYLE,
     PROMPT_STYLE,
+    clear_terminal_title,
     context_left_percent,
     create_console,
+    set_terminal_title,
 )
 from aldwin.client import (
     BootstrapResult,
@@ -127,8 +130,9 @@ def _wake_pending_pipe_input(input_dev: Input) -> None:
     setattr(input_dev, "_aldwin_wakes_pending", True)
 
 
-CTRL_C_QUIT_WINDOW: Final[float] = 2.0
+CTRL_C_QUIT_WINDOW: Final[float] = CTRL_C_QUIT_WINDOW_S
 DECLINE_REASON_PROMPT: Final[str] = "  why? (Enter to skip): "
+PROMPT_MARKER: Final[str] = "❯ "
 
 
 class ChatClientProtocol(SlashCommandClient, Protocol):
@@ -169,6 +173,22 @@ class ChatClientProtocol(SlashCommandClient, Protocol):
     async def close(self) -> None: ...
 
 
+def format_toolbar_model_segment(
+    model: str,
+    used_tokens: int = 0,
+    *,
+    todo_label: str | None = None,
+    plain: bool = False,
+) -> str:
+    """Right-side footer: model · context bar · optional todo."""
+    from aldwin.cli.theme import context_bar
+
+    pct = context_left_percent(model, used_tokens)
+    bar = context_bar(pct, plain=plain)
+    todo_bit = f" · {todo_label}" if todo_label else ""
+    return f"{model} · {bar}{pct}% context left{todo_bit}"
+
+
 def format_bottom_toolbar(
     model: str,
     session_id: str = "",
@@ -176,17 +196,19 @@ def format_bottom_toolbar(
     *,
     width: int | None = None,
     todo_label: str | None = None,
+    plain: bool = False,
+    left_hint: str | None = None,
 ) -> str:
-    """Format the bottom status line (`<model> · <N>% context left` + hints)."""
+    """Format the bottom status line (left hint + model/context)."""
     _ = session_id
-    pct = context_left_percent(model, used_tokens)
-    todo_bit = f" · {todo_label}" if todo_label else ""
-    left = f" {model} · {pct}% context left{todo_bit}"
-    right = "? shortcuts · esc stop "
+    left = f" {left_hint or '? for shortcuts'} "
+    right = format_toolbar_model_segment(
+        model, used_tokens, todo_label=todo_label, plain=plain
+    )
     if width is not None and width >= len(left) + len(right) + 4:
         gap = width - len(left) - len(right)
-        return f"{left}{' ' * gap}{right}"
-    return f"{left}   {right}"
+        return f"{left}{' ' * gap}{right} "
+    return f"{left}  {right} "
 
 
 async def read_approval_key(
@@ -206,17 +228,34 @@ async def read_approval_key(
     return answer
 
 
+def _approval_answers(*, grantable: bool) -> list[ApprovalAnswer]:
+    """Chooser row order: No, Yes, optional Yes-for-session."""
+    answers: list[ApprovalAnswer] = ["no", "yes"]
+    if grantable:
+        answers.append("yes_session")
+    return answers
+
+
 async def _read_approval_key_detail(
     input_dev: Input,
     *,
     grantable: bool = False,
     on_expand: Callable[[], None] | None = None,
+    on_select: Callable[[int], None] | None = None,
     escape_delay: float = ESCAPE_FLUSH_DELAY,
+    selected: int = 0,
 ) -> tuple[ApprovalAnswer, bool]:
-    """Return `(answer, pressed_explicit_n)` for an approval prompt."""
+    """Return `(answer, pressed_explicit_n)` for an approval prompt.
+
+    Arrow keys move the ❯ highlight (via ``on_select``). Enter confirms the
+    highlighted row. ``y`` / ``n`` / ``a`` remain shortcuts; only explicit ``n``
+    asks for a decline reason.
+    """
     loop = asyncio.get_running_loop()
     future: asyncio.Future[tuple[ApprovalAnswer, bool]] = loop.create_future()
     flush_handle: asyncio.TimerHandle | None = None
+    answers = _approval_answers(grantable=grantable)
+    cursor = selected % len(answers) if answers else 0
 
     def _resolve(answer: ApprovalAnswer, explicit_n: bool = False) -> None:
         if not future.done():
@@ -228,6 +267,12 @@ async def _read_approval_key_detail(
         if unread:
             store_typeahead(input_dev, unread)
 
+    def _move(delta: int) -> None:
+        nonlocal cursor
+        cursor = (cursor + delta) % len(answers)
+        if on_select is not None:
+            on_select(cursor)
+
     def _handle_keys(keys: list[KeyPress]) -> None:
         for index, kp in enumerate(keys):
             if future.done():
@@ -236,6 +281,12 @@ async def _read_approval_key_detail(
             if kp.key == Keys.ControlO:
                 if on_expand is not None:
                     on_expand()
+                continue
+            if kp.key in (Keys.Up, Keys.ControlP):
+                _move(-1)
+                continue
+            if kp.key in (Keys.Down, Keys.ControlN):
+                _move(1)
                 continue
             lowered = kp.data.lower() if kp.data else ""
             if lowered == "y":
@@ -250,14 +301,13 @@ async def _read_approval_key_detail(
                 _resolve("no", True)
                 _keep_unread(keys[index + 1 :])
                 return
-            if kp.key in (
-                Keys.Enter,
-                Keys.ControlM,
-                Keys.ControlJ,
-                Keys.Escape,
-                Keys.ControlC,
-                Keys.ControlD,
-            ):
+            if kp.key in (Keys.Enter, Keys.ControlM, Keys.ControlJ):
+                chosen = answers[cursor]
+                # Enter on No is soft decline (no reason prompt); Esc same.
+                _resolve(chosen, False)
+                _keep_unread(keys[index + 1 :])
+                return
+            if kp.key in (Keys.Escape, Keys.ControlC, Keys.ControlD):
                 _resolve("no", False)
                 _keep_unread(keys[index + 1 :])
                 return
@@ -303,12 +353,25 @@ async def _read_approval_key_detail(
         stack.close()
 
 
+@dataclass
+class QueuedTurn:
+    """A message typed during a turn and waiting to send after `done`."""
+
+    text: str
+    skills: list[str]
+
+
 class TurnKeyListener:
-    """Listens for `Esc` and `Ctrl-C` on `input_dev` while a turn is running.
+    """Listens for Esc / Ctrl-C and optional type-ahead while a turn runs.
 
     Uses `input_dev.raw_mode()` + `input_dev.attach()` on the shared `asyncio`
     event loop and schedules a `50 ms` `flush_keys()` timer so bare `Esc` is
     flushed promptly without misinterpreting multi-byte arrow or `Alt` sequences.
+
+    Rich Live owns the terminal during a turn, so type-ahead cannot share the
+    docked PromptSession. Printable keys accumulate into a draft here; Enter
+    queues the draft for the next turn. Leftover draft is seeded back into the
+    dock after the turn. Approval pauses the listener so the chooser owns keys.
     """
 
     def __init__(
@@ -318,16 +381,26 @@ class TurnKeyListener:
         on_escape: Callable[[], Awaitable[None]],
         on_ctrl_c: Callable[[], Awaitable[None]],
         escape_delay: float = ESCAPE_FLUSH_DELAY,
+        on_queue: Callable[[str], Awaitable[None]] | None = None,
+        on_draft: Callable[[str], None] | None = None,
     ) -> None:
         self._input = input_dev
         self._on_escape = on_escape
         self._on_ctrl_c = on_ctrl_c
         self._escape_delay = escape_delay
+        self._on_queue = on_queue
+        self._on_draft = on_draft
+        self._draft = ""
 
         self._stack: ExitStack | None = None
         self._flush_handle: asyncio.TimerHandle | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._paused = False
+
+    @property
+    def draft(self) -> str:
+        """Current type-ahead draft (not yet queued)."""
+        return self._draft
 
     async def _invoke(self, coro_fn: Callable[[], Awaitable[None]]) -> None:
         await coro_fn()
@@ -337,12 +410,43 @@ class TurnKeyListener:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    def _notify_draft(self) -> None:
+        if self._on_draft is not None:
+            self._on_draft(self._draft)
+
     def _process_keys(self, keys: list[KeyPress]) -> None:
         for kp in keys:
             if kp.key == Keys.Escape:
                 self._spawn(self._on_escape)
             elif kp.key == Keys.ControlC:
                 self._spawn(self._on_ctrl_c)
+            elif self._on_queue is None:
+                continue
+            elif kp.key in (Keys.ControlM, Keys.Enter):
+                text = self._draft.strip()
+                self._draft = ""
+                self._notify_draft()
+                if text:
+
+                    async def _queue(queued: str = text) -> None:
+                        assert self._on_queue is not None
+                        await self._on_queue(queued)
+
+                    self._spawn(_queue)
+            elif kp.key == Keys.ControlH or kp.key == Keys.Backspace:
+                if self._draft:
+                    self._draft = self._draft[:-1]
+                    self._notify_draft()
+            elif kp.key == Keys.ControlU:
+                self._draft = ""
+                self._notify_draft()
+            elif isinstance(kp.key, str) and len(kp.key) == 1 and kp.key.isprintable():
+                self._draft += kp.key
+                self._notify_draft()
+            elif kp.data and len(kp.data) == 1 and kp.data.isprintable():
+                # Some backends deliver the character via ``data``.
+                self._draft += kp.data
+                self._notify_draft()
 
     def _flush_pending(self) -> None:
         self._flush_handle = None
@@ -434,29 +538,14 @@ def build_prompt_session(
     output_dev: Output | None = None,
     completer: object | None = None,
     lexer: object | None = None,
-) -> PromptSession[str]:
-    """Create `PromptSession` with `FileHistory`, completer, and keys."""
+    on_quit: Callable[[], None] | None = None,
+    paste_store: PasteStore | None = None,
+) -> AldwinPromptSession:
+    """Create docked `AldwinPromptSession` with history, completer, and keys."""
     from prompt_toolkit.completion import Completer
     from prompt_toolkit.lexers import Lexer
 
-    kb = KeyBindings()
-
-    @kb.add("escape", "enter")
-    def _insert_newline(event: KeyPressEvent) -> None:
-        event.current_buffer.insert_text("\n")
-
-    @kb.add("c-j")
-    def _insert_newline_ctrl_j(event: KeyPressEvent) -> None:
-        event.current_buffer.insert_text("\n")
-
-    @kb.add("c-m")
-    def _handle_enter(event: KeyPressEvent) -> None:
-        buf = event.current_buffer
-        if buf.document.text_before_cursor.endswith("\\"):
-            buf.delete_before_cursor(count=1)
-            buf.insert_text("\n")
-        else:
-            buf.validate_and_handle()
+    from aldwin.cli.completions_menu import install_slash_completions_menu
 
     effective_output = output_dev
     if effective_output is None and isinstance(input_dev, PipeInput):
@@ -472,18 +561,29 @@ def build_prompt_session(
         )
 
     active_lexer = lexer if isinstance(lexer, Lexer) else None
+    store = paste_store if paste_store is not None else PasteStore()
 
-    return PromptSession(
+    session = AldwinPromptSession(
         history=_create_history(home),
         completer=active_completer,
         lexer=active_lexer,
-        key_bindings=kb,
-        bottom_toolbar=toolbar_fn,
         style=PLAIN_PROMPT_STYLE if plain else PROMPT_STYLE,
         multiline=False,
         input=input_dev,
         output=effective_output,
+        on_quit=on_quit,
+        footer_right=toolbar_fn,
+        paste_store=store,
+        reserve_space_for_menu=0,
+        complete_while_typing=True,
+        # Leave the submitted prompt line in scrollback as the only user echo.
+        # Re-printing a user bubble would duplicate the line.
+        erase_when_done=False,
     )
+    session.key_bindings = session.attach_key_bindings()
+    session.paste_store = store  # type: ignore[attr-defined]
+    install_slash_completions_menu(session)
+    return session
 
 
 async def run_chat(
@@ -566,19 +666,24 @@ async def _chat_loop(
     last_context_tokens = 0
     last_ctrl_c_at = 0.0
     quit_requested = False
+    pending_queue: list[QueuedTurn] = []
+    restore_draft: str | None = None
+
+    def _request_quit() -> None:
+        nonlocal quit_requested
+        quit_requested = True
 
     def _reset_tokens() -> None:
         nonlocal last_context_tokens
         last_context_tokens = 0
         renderer.clear_todo()
 
-    def _toolbar() -> str:
-        return format_bottom_toolbar(
+    def _toolbar_right() -> str:
+        return format_toolbar_model_segment(
             client.model,
-            client.session_id,
             last_context_tokens,
-            width=console.width,
             todo_label=renderer.todo_view.toolbar_label(),
+            plain=boot.plain,
         )
 
     skill_cache = SkillCache(items=[])
@@ -588,12 +693,13 @@ async def _chat_loop(
     )
     session = build_prompt_session(
         boot.home,
-        toolbar_fn=_toolbar,
+        toolbar_fn=_toolbar_right,
         plain=boot.plain,
         input_dev=input_dev,
         output_dev=output_dev,
         completer=chat_completer,
         lexer=skill_lexer,
+        on_quit=_request_quit,
     )
 
     async def _prompt_line(label: str) -> str:
@@ -621,7 +727,12 @@ async def _chat_loop(
                 display_home=boot.display_home,
                 display_workspace=boot.display_workspace or None,
             )
-        renderer.render_history(history_ev, updated_at=client.updated_at)
+        # Quiet reopen: no transcript dump (use /history). Keep interrupted notice.
+        renderer.render_history(
+            history_ev,
+            updated_at=client.updated_at,
+            show_messages=False,
+        )
         if enable_skills:
             try:
                 catalog = await client.skills_list()
@@ -646,57 +757,78 @@ async def _chat_loop(
             console.print(Text(profile_warn, style="warn"))
 
         use_patch_stdout = not isinstance(input_dev, PipeInput) and sys.stdout.isatty()
-        first_prompt = True
 
         while not quit_requested:
-            if not first_prompt:
-                console.print()
-            first_prompt = False
-
-            if not boot.plain and console.is_interactive:
-                console.print(Rule(style="border", characters="─"))
-
-            try:
-                if use_patch_stdout:
-                    with patch_stdout(raw=True):
-                        user_text = await session.prompt_async("› ")
-                else:
-                    user_text = await session.prompt_async("› ")
-            except KeyboardInterrupt:
-                now = time.monotonic()
-                if now - last_ctrl_c_at <= CTRL_C_QUIT_WINDOW:
+            session.set_busy(False)
+            if pending_queue:
+                queued = pending_queue.pop(0)
+                user_text = queued.text
+                picked_skills = queued.skills
+                restore_draft = None
+            else:
+                default_text = restore_draft or ""
+                restore_draft = None
+                try:
+                    prompt_kwargs: dict[str, object] = {
+                        "placeholder": PLACEHOLDER if not boot.plain else None,
+                    }
+                    if default_text:
+                        prompt_kwargs["default"] = default_text
+                    if use_patch_stdout:
+                        with patch_stdout(raw=True):
+                            user_text = await session.prompt_async(
+                                PROMPT_MARKER,
+                                **prompt_kwargs,  # type: ignore[arg-type]
+                            )
+                    else:
+                        user_text = await session.prompt_async(
+                            PROMPT_MARKER,
+                            **prompt_kwargs,  # type: ignore[arg-type]
+                        )
+                except KeyboardInterrupt:
+                    # Dock normally owns Ctrl+C; bare interrupt still double-tap exits.
+                    now = time.monotonic()
+                    if now - last_ctrl_c_at <= CTRL_C_QUIT_WINDOW:
+                        break
+                    last_ctrl_c_at = now
+                    session.set_footer("ctrl_c", left="Press Ctrl-C again to exit")
+                    continue
+                except EOFError:
                     break
-                last_ctrl_c_at = now
-                console.print(Text("Press Ctrl-C again to quit", style="muted"))
-                continue
-            except EOFError:
-                break
 
-            stripped_input = user_text.strip()
-            if not stripped_input:
-                continue
+                stripped_input = user_text.strip()
+                if not stripped_input:
+                    continue
 
-            console.print()
-            last_ctrl_c_at = 0.0
+                last_ctrl_c_at = 0.0
+                session.set_footer("idle")
 
-            if stripped_input == "?":
-                render_shortcuts(renderer)
-                continue
-
-            if stripped_input.startswith("/"):
-                should_exit = await handle_slash_command(
-                    user_text,
-                    client=client,
-                    renderer=renderer,
-                    prompt_line=_prompt_line,
-                    on_reset_tokens=_reset_tokens,
+                if stripped_input.startswith("/"):
+                    should_exit = await handle_slash_command(
+                        user_text,
+                        client=client,
+                        renderer=renderer,
+                        prompt_line=_prompt_line,
+                        on_reset_tokens=_reset_tokens,
+                        input_dev=input_dev,
+                    )
+                    if should_exit:
+                        break
+                    continue
+                picked_skills = extract_skill_tokens(
+                    user_text, skill_cache.known_names()
                 )
-                if should_exit:
-                    break
-                continue
 
+            paste_store: PasteStore = getattr(session, "paste_store", PasteStore())
+            user_text = paste_store.resolve(user_text)
+            user_text = (
+                user_text.replace("\r\n", "\n").replace("\r", "\n").expandtabs(4)
+            )
             turn_renderer = renderer.start_turn()
-            picked = extract_skill_tokens(user_text, skill_cache.known_names())
+            picked = picked_skills or extract_skill_tokens(
+                user_text, skill_cache.known_names()
+            )
+            session.set_busy(True)
 
             async def _on_turn_escape() -> None:
                 await client.stop()
@@ -709,14 +841,26 @@ async def _chat_loop(
                     await client.stop()
                     return
                 last_ctrl_c_at = now
+                # Keep dock's double-tap clock in sync so the next empty-prompt
+                # Ctrl+C exits without needing a third press.
+                session._ctrl_c_at = now
                 await client.stop()
-                console.print(Text("Press Ctrl-C again to quit", style="muted"))
+                session.set_footer("ctrl_c", left="Press Ctrl-C again to exit")
 
+            async def _on_queue(text: str) -> None:
+                skills = extract_skill_tokens(text, skill_cache.known_names())
+                pending_queue.append(QueuedTurn(text=text, skills=skills))
+                preview = text if len(text) <= 60 else text[:59] + "…"
+                console.print(Text(f"Queued: {preview}", style="muted"))
+
+            turn_stopped_early = False
+            set_terminal_title(console.file, "Aldwin · working…", plain=boot.plain)
             try:
                 async with TurnKeyListener(
                     input_dev,
                     on_escape=_on_turn_escape,
                     on_ctrl_c=_on_turn_ctrl_c,
+                    on_queue=_on_queue,
                 ) as listener:
                     async for ev in client.turn(user_text, skills=picked):
                         if isinstance(ev, SkillsUsedEvent):
@@ -747,10 +891,11 @@ async def _chat_loop(
                                     on_expand=lambda: (
                                         turn_renderer.expand_approval_panel(current_ev)
                                     ),
+                                    on_select=turn_renderer.set_approval_selection,
+                                    selected=turn_renderer.approval_selected,
                                 )
-                                # Collapse the panel before the reason prompt so the
-                                # Diff box is not still glowing while the user types.
-                                turn_renderer.resolve_approval(ev, answer)
+                                # Collapse Live first; reason stays with spinner paused.
+                                turn_renderer.collapse_approval_panel()
                                 if answer == "no" and explicit_n:
                                     try:
                                         raw_reason = await _prompt_line(
@@ -764,6 +909,9 @@ async def _chat_loop(
                                             reason = cleaned_reason[:280]
                                     except (EOFError, KeyboardInterrupt):
                                         reason = None
+                                turn_renderer.resolve_approval(
+                                    ev, answer, reason=reason, resume=True
+                                )
                             await client.approve(
                                 ev.approval_id,
                                 answer,
@@ -771,6 +919,11 @@ async def _chat_loop(
                                 reason=reason,
                             )
                         elif isinstance(ev, DoneEvent):
+                            if (
+                                ev.reason == "stopped"
+                                and not turn_renderer.has_assistant_output
+                            ):
+                                turn_stopped_early = True
                             turn_tokens = turn_renderer.finish_done(ev)
                             if ev.usage is not None:
                                 last_context_tokens = (
@@ -780,8 +933,15 @@ async def _chat_loop(
                                 last_context_tokens += turn_tokens
                         elif isinstance(ev, ErrorEvent):
                             turn_renderer.finish_error(ev)
+                    leftover = listener.draft.strip()
+                    if leftover and not pending_queue:
+                        restore_draft = leftover
+                    elif turn_stopped_early and not pending_queue:
+                        restore_draft = user_text
             finally:
+                clear_terminal_title(console.file, plain=boot.plain)
                 turn_renderer.close()
+                session.set_busy(False)
 
             post_warn = pop_profile_truncation_warning()
             if post_warn:

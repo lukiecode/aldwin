@@ -173,8 +173,15 @@ async def test_open_in_process_client_and_inspect_helpers(
         openai_api_key="sk-proj-test12345678",
         tavily_api_key="tvly-dev-test87654321",
         model="gpt-4o",
+        theme="light",
+        last_seen_version="0.0.2",
         home=aldwin_home,
     )
+    from aldwin.core.settings import load_config
+
+    cfg = load_config(aldwin_home)
+    assert cfg.theme == "light"
+    assert cfg.last_seen_version == "0.0.2"
 
     async with open_in_process_client(home=aldwin_home) as client:
         # Calling connect() a second time is idempotent and returns cached DoneEvent

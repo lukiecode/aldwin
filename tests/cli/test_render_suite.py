@@ -1,4 +1,4 @@
-"""CLI rendering suite covering `FR-7`, `TC-08`, `TC-09`, and `TC-20`."""
+"""CLI rendering suite: welcome, tools, approvals, plain mode, slash unknowns."""
 
 from __future__ import annotations
 
@@ -39,11 +39,13 @@ def test_welcome_and_header_rendering() -> None:
     assert "Welcome to Aldwin" in text
     assert "A personal assistant that runs on your computer." in text
     assert "Aldwin · gpt-4o · ~/.aldwin" in text
-    assert 'Try: "what can you do?"  ·  /help  ·  Esc stops an answer' in text
+    assert (
+        'Try: "what can you do?"  ·  /help  ·  /history  ·  Esc stops an answer' in text
+    )
 
 
 def test_dimmed_history_and_divider() -> None:
-    """`render_history` prints last 20 messages dimmed, divider, and interrupted."""
+    """Quiet reopen hides transcript; interrupted notice still shows."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -60,13 +62,13 @@ def test_dimmed_history_and_divider() -> None:
         HistoryEvent(re="h1", messages=items, interrupted=True),
         updated_at="2026-10-17T18:02:00+00:00",
         now=now,
+        show_messages=False,
     )
 
     text = console.export_text()
-    assert "› turn-0" in text
-    assert "turn-19" in text
-    assert text.index("turn-0") < text.index("turn-19")
-    assert "continuing from yesterday 18:02" in text
+    assert "turn-0" not in text
+    assert "turn-19" not in text
+    assert "continuing from yesterday 18:02 · /history to review" in text
     assert "Your last request was interrupted. Say continue to pick it up." in text
 
 
@@ -102,7 +104,7 @@ def test_streamed_markdown_blocks_including_code_fence() -> None:
 
 
 def test_render_tool_card_ok_and_fail_exact_text() -> None:
-    """TC-08: Tool cards render exact `✓ web_search 1.2s · 3 results` and `✗` copy."""
+    """Tool cards render exact `✓ web_search 1.2s · 3 results` and `✗` copy."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -135,12 +137,13 @@ def test_render_tool_card_ok_and_fail_exact_text() -> None:
     turn.finish_done(DoneEvent(re="r1", reason="answered"))
 
     raw_text = console.export_text()
-    assert "✓ web_search  1.2s · 3 results" in raw_text
-    assert "✗ web_fetch  refused: private address" in raw_text
+    assert "✓ Search  1.2s · 3 results" in raw_text
+    assert "✗ Fetch" in raw_text
+    assert "refused: private address" in raw_text
 
     normalized_lines = [" ".join(line.split()) for line in raw_text.splitlines()]
-    assert "✓ web_search 1.2s · 3 results" in normalized_lines
-    assert "✗ web_fetch refused: private address" in normalized_lines
+    assert "✓ Search 1.2s · 3 results" in normalized_lines
+    assert any("refused: private address" in line for line in normalized_lines)
 
 
 def test_approval_panel_end_line_and_stopped_line() -> None:
@@ -184,10 +187,10 @@ def test_approval_panel_end_line_and_stopped_line() -> None:
     text = console.export_text()
     assert "Run this command?" in text
     assert "df -h" in text
-    assert "[N] no" in text
-    assert "✓ done · 4s · 1 tool · 1.1k tokens" in text
-    assert "Partial text before Esc (stopped)" in text
-    assert "✓ done · 0s · 0 tools (stopped)" in text
+    assert "Do you want to proceed?" in text
+    assert "Worked for 4s · 1 tool · 1.1k tokens" in text
+    assert "Partial text before Esc" in text
+    assert "Interrupted · tell Aldwin what to do instead" in text
 
 
 def test_each_error_code_copy() -> None:
@@ -213,7 +216,7 @@ def test_each_error_code_copy() -> None:
 
 
 def test_plain_mode_output_contains_no_ansi_escape_codes() -> None:
-    """TC-09: Plain mode rendering contains zero `\\x1b[` ANSI escape sequences."""
+    """Plain mode rendering contains zero `\\x1b[` ANSI escape sequences."""
     buf = io.StringIO()
     console = create_console(plain=True, width=80, record=True, file=buf)
     renderer = ChatRenderer(console, plain=True)
@@ -243,7 +246,7 @@ def test_plain_mode_output_contains_no_ansi_escape_codes() -> None:
     assert "\x1b[" not in raw
     assert "\a" not in raw
     assert "Plain answer paragraph." in raw
-    assert "✓ web_search  1.2s · 3 results" in raw
+    assert "✓ Search  1.2s · 3 results" in raw
 
 
 async def test_unknown_slash_command_with_fake_host(fake_host: FakeHost) -> None:
@@ -264,7 +267,7 @@ async def test_unknown_slash_command_with_fake_host(fake_host: FakeHost) -> None
 
 
 def test_render_welcome_long_display_home_capped_at_76_cols() -> None:
-    """TC-14: Long `display_home` path in header panel stays `<= 76` columns."""
+    """Long `display_home` path in header panel stays `<= 76` columns."""
     buf = io.StringIO()
     console = create_console(width=120, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -283,7 +286,7 @@ def test_render_welcome_long_display_home_capped_at_76_cols() -> None:
 
 
 def test_colour_mode_notices_italicize_continue() -> None:
-    """TC-15: Colour-mode interrupted and `max_steps` notices italicize `continue`."""
+    """Colour-mode interrupted and `max_steps` notices italicize `continue`."""
     buf = io.StringIO()
     console = create_console(
         plain=False,

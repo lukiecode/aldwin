@@ -1,1 +1,1 @@
-"""CLI rendering and slash-command test package (`FR-7`)."""
+"""CLI rendering and slash-command test package."""

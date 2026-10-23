@@ -23,7 +23,9 @@ from aldwin.core.settings import (
     mask_secret,
     resolve_key,
     save_secrets,
+    update_config_last_seen_version,
     update_config_model,
+    update_config_theme,
 )
 
 
@@ -32,7 +34,7 @@ def test_load_config_missing_file_returns_defaults(aldwin_home: Path) -> None:
     cfg = load_config(aldwin_home)
     assert cfg == AldwinConfig(
         model="gpt-4o",
-        theme="default",
+        theme="dark",
         limits=LimitsConfig(
             context_exchanges=20,
             profile_chars=4000,
@@ -128,7 +130,11 @@ def test_load_config_malformed_yaml_or_non_dict_raises_config_error(
     [
         ("limits:\n  max_steps: 0\n", "limits.max_steps", "integer >= 1"),
         ("limits:\n  profile_chars: 99\n", "limits.profile_chars", "integer >= 100"),
-        ("theme: neon\n", "theme", "'default' or 'plain'"),
+        (
+            "theme: neon\n",
+            "theme",
+            "'auto', 'dark', 'light', 'colour_blind', or 'plain'",
+        ),
         ("limits: true\n", "limits", "mapping of limit settings"),
         ('model: "   "\n', "model", "non-empty string"),
     ],
@@ -267,6 +273,28 @@ def test_mask_secret_and_resolved_key_repr() -> None:
     assert "sk-…abcd" in repr(resolved)
     assert "12345678" not in repr(resolved)
     assert "12345678" not in str(resolved)
+
+
+def test_update_config_theme_and_last_seen_version(aldwin_home: Path) -> None:
+    """Theme and last_seen_version persist to config.yaml with validation."""
+    ensure_home(aldwin_home)
+    update_config_theme("light", aldwin_home)
+    cfg = load_config(aldwin_home)
+    assert cfg.theme == "light"
+
+    update_config_theme("colour_blind", aldwin_home)
+    assert load_config(aldwin_home).theme == "colour_blind"
+
+    with pytest.raises(ConfigError) as exc_info:
+        update_config_theme("neon", aldwin_home)
+    assert exc_info.value.field == "theme"
+
+    update_config_last_seen_version("0.0.2", aldwin_home)
+    assert load_config(aldwin_home).last_seen_version == "0.0.2"
+
+    with pytest.raises(ConfigError) as exc_info2:
+        update_config_last_seen_version("   ", aldwin_home)
+    assert exc_info2.value.field == "last_seen_version"
 
 
 def test_extensible_provider_secrets_preserved_and_resolved(

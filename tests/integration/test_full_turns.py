@@ -378,4 +378,4 @@ async def test_turn_with_tool_then_final_answer_emits_text_and_hides_final_answe
     rendered = console.export_text()
     assert "final_answer" not in rendered
     assert "You prefer metric units." in rendered
-    assert "✓ done · 0s · 1 tool" in rendered
+    assert "Worked for 0s · 1 tool" in rendered

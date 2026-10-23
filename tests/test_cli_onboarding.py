@@ -46,12 +46,12 @@ async def test_onboarding_bad_key_then_good_key(
     assert ok is True
     assert password_flags == [True, True, True]
     text = console.export_text()
-    assert "Welcome to Aldwin" in text
+    assert "ALDWIN" in text
+    assert "Type at the ❯ prompt below" in text
     assert "That key was rejected by OpenAI. Check it and paste it again." in text
     assert "Checking key… sk-…good ✓" in text
     assert "Default model: gpt-4o (change any time with /model)" in text
     assert f"Created {boot.display_home}" in text
-    assert 'Try: "what can you do?"  ·  /help  ·  Esc stops an answer' in text
 
     status = get_onboarding_status(aldwin_home)
     assert status.has_openai_key is True
