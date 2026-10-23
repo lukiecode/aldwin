@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-import yaml
 from agentling import Agent, AgentSession, Memory, Model, Skill, Tool
-from agentling.errors import SkillLoadError
 
 from aldwin.core.approval_log import ApprovalLogger
 from aldwin.core.context import build_context
@@ -59,6 +57,9 @@ _RESERVED_SKILL_NAMES: Final[frozenset[str]] = frozenset(
         "write_file",
         "read_document",
         "download_file",
+        "todo",
+        "calculate",
+        "create_skill",
     }
 )
 
@@ -145,6 +146,8 @@ class SessionContext:
     persona_cap: int = 2000
     env_allow: tuple[str, ...] = ()
     session_id_getter: Callable[[], str] | None = None
+    host_flags: dict[str, bool] | None = None
+    model_name: str = ""
 
 
 def build_tools(
@@ -153,6 +156,7 @@ def build_tools(
     extra_tools: Sequence[Tool] = (),
 ) -> list[Tool]:
     """Construct built-in tools with `session_ctx` and wrap in policy."""
+    import aldwin
     from aldwin.core.tools.calculate import build_calculate_tool
     from aldwin.core.tools.documents import build_document_tools
     from aldwin.core.tools.download import build_download_tool
@@ -161,6 +165,7 @@ def build_tools(
     from aldwin.core.tools.memory_tools import build_memory_tools
     from aldwin.core.tools.persona_tool import build_persona_tool
     from aldwin.core.tools.run_command import build_run_command_tool
+    from aldwin.core.tools.skill_tools import build_create_skill_tool
     from aldwin.core.tools.todo import build_todo_tool
     from aldwin.core.tools.web_fetch import build_web_fetch_tool
     from aldwin.core.tools.web_search import build_web_search_tool
@@ -170,6 +175,7 @@ def build_tools(
         if session_ctx.home is not None
         else session_ctx.policy_session.home
     )
+    host_flags = session_ctx.host_flags if session_ctx.host_flags is not None else {}
 
     async def _legacy_ask(summary: str, detail: str = "") -> bool:
         ans = await session_ctx.ask(
@@ -211,6 +217,12 @@ def build_tools(
         build_download_tool(session_ctx.workspace, session_ctx.policy_session),
         build_todo_tool(),
         build_calculate_tool(),
+        build_create_skill_tool(
+            home=root,
+            host_flags=host_flags,
+            version=aldwin.__version__,
+            model=session_ctx.model_name or "unknown",
+        ),
         *extra_tools,
     ]
     verify_registered_tools(raw_tools)
@@ -253,67 +265,46 @@ def _clean_reason(exc: BaseException) -> str:
 
 
 def load_skills(skills_dir: Path) -> SkillLoadResult:
-    """Load and validate all skills under `skills_dir`.
+    """Load skills from `skills_dir` plus packaged defaults via `build_catalogue`.
 
-    Invalid skills are skipped with a one-line warning in the log and recorded in
-    `SkillLoadResult.invalid` as `reason`. When two skills declare the same
-    `name`, the first folder (in sorted order) wins and the duplicate is logged
-    and recorded as invalid.
+    Prefer calling `aldwin.core.skills.build_catalogue` directly in new code.
     """
-    resolved_dir = skills_dir.expanduser().resolve()
-    if not resolved_dir.is_dir():
-        return SkillLoadResult(valid=[], invalid=[])
+    import aldwin
+    from aldwin.core.skills import build_catalogue, catalogue_skills_for_agent
 
-    valid: list[Skill] = []
-    invalid: list[InvalidSkill] = []
-    seen_names: set[str] = set()
-
-    candidates = sorted(
-        (
-            p
-            for p in resolved_dir.iterdir()
-            if p.is_dir() and not p.name.startswith(".")
-        ),
-        key=lambda p: p.name,
+    home = skills_dir.expanduser().resolve().parent
+    catalogue = build_catalogue(
+        home,
+        version=aldwin.__version__,
+        model="unknown",
     )
-
-    for folder in candidates:
-        skill_file = folder / SKILL_FILENAME
-        if not skill_file.is_file():
-            reason = f"missing {SKILL_FILENAME}"
-            logger.warning("Skipping invalid skill in %s: %s", folder, reason)
-            invalid.append(InvalidSkill(name=folder.name, path=folder, reason=reason))
-            continue
-
-        try:
-            skill = Skill.from_path(folder)
-            if not isinstance(skill.name, str) or not skill.name.strip():
-                raise ValueError("frontmatter 'name' must be a non-empty string.")
-            if not isinstance(skill.description, str) or not skill.description.strip():
-                raise ValueError(
-                    "frontmatter 'description' must be a non-empty string."
+    valid = catalogue_skills_for_agent(catalogue)
+    invalid = [
+        InvalidSkill(
+            name=entry.name,
+            path=entry.path or skills_dir / entry.name,
+            reason=next(
+                (
+                    f.removeprefix("error: ").strip()
+                    for f in entry.flags
+                    if f.startswith("error:")
+                ),
+                "invalid",
+            ),
+        )
+        for entry in catalogue
+        if entry.skill is None
+    ]
+    for skill in valid:
+        if skill.name in _RESERVED_SKILL_NAMES:
+            valid = [s for s in valid if s.name != skill.name]
+            invalid.append(
+                InvalidSkill(
+                    name=skill.name,
+                    path=skill.path,
+                    reason=f"skill name {skill.name!r} is reserved.",
                 )
-
-            cleaned_name = skill.name.strip()
-            if "\n" in cleaned_name or "\r" in cleaned_name:
-                raise ValueError("frontmatter 'name' must be a single line.")
-            skill.name = cleaned_name
-            skill.description = " ".join(skill.description.split())
-
-            if skill.tools:
-                raise ValueError("custom skill tools are not supported in 0.0.1.")
-            if skill.name in _RESERVED_SKILL_NAMES:
-                raise ValueError(f"skill name {skill.name!r} is reserved.")
-            if skill.name in seen_names:
-                raise ValueError(f"duplicate skill name {skill.name!r}.")
-
-            seen_names.add(skill.name)
-            valid.append(skill)
-        except (OSError, yaml.YAMLError, ValueError, TypeError, SkillLoadError) as exc:
-            reason = _clean_reason(exc)
-            logger.warning("Skipping invalid skill in %s: %s", folder, reason)
-            invalid.append(InvalidSkill(name=folder.name, path=folder, reason=reason))
-
+            )
     return SkillLoadResult(valid=valid, invalid=invalid)
 
 
@@ -347,9 +338,14 @@ def build_agent(
     tools: Sequence[Tool] | None = None,
     on_retry: RetryCallback | None = None,
     session_id_getter: Callable[[], str] | None = None,
+    host_flags: dict[str, bool] | None = None,
 ) -> Agent:
     """Assemble Aldwin's `Agent` from `config`, `secrets`, and `ask`."""
+    import aldwin
+    from aldwin.core.skills import build_catalogue, catalogue_skills_for_agent
+
     root = (home if home is not None else home_dir()).expanduser().resolve()
+    flags = host_flags if host_flags is not None else {}
 
     if isinstance(workspace, Workspace):
         active_ws: Workspace | None = workspace
@@ -385,6 +381,8 @@ def build_agent(
             persona_cap=config.limits.persona_chars,
             env_allow=tuple(config.run_command.env_allow),
             session_id_getter=session_id_getter,
+            host_flags=flags,
+            model_name=config.model,
         )
         active_tools = tuple(build_tools(ctx))
     else:
@@ -415,7 +413,47 @@ def build_agent(
         verify_registered_tools(built)
         active_tools = tuple(built)
 
-    skill_result = load_skills(root / SKILLS_SUBDIR)
+    catalogue = build_catalogue(
+        root,
+        version=aldwin.__version__,
+        model=config.model,
+    )
+    skill_list = catalogue_skills_for_agent(catalogue)
+    kept_skills: list[Skill] = []
+    reserved_invalid: list[InvalidSkill] = []
+    for skill in skill_list:
+        if skill.name in _RESERVED_SKILL_NAMES:
+            reserved_invalid.append(
+                InvalidSkill(
+                    name=skill.name,
+                    path=skill.path,
+                    reason=f"skill name {skill.name!r} is reserved.",
+                )
+            )
+        else:
+            kept_skills.append(skill)
+    skill_list = kept_skills
+    invalid = tuple(
+        [
+            *(
+                InvalidSkill(
+                    name=entry.name,
+                    path=entry.path or root / SKILLS_SUBDIR / entry.name,
+                    reason=next(
+                        (
+                            f.removeprefix("error: ").strip()
+                            for f in entry.flags
+                            if f.startswith("error:")
+                        ),
+                        "invalid",
+                    ),
+                )
+                for entry in catalogue
+                if entry.skill is None
+            ),
+            *reserved_invalid,
+        ]
+    )
     ws_for_context: Callable[[], Path | str] | Path | None = (
         (lambda: active_ws.root) if active_ws is not None else None
     )
@@ -428,14 +466,15 @@ def build_agent(
     agent = Agent(
         model=active_model,
         tools=active_tools,
-        skills=skill_result.valid,
+        skills=skill_list,
         instructions=load_base_instructions(),
         max_steps=config.limits.max_steps,
         tool_timeout=DEFAULT_TOOL_TIMEOUT,
         max_tool_output_chars=DEFAULT_MAX_TOOL_OUTPUT_CHARS,
         context_manager=context_manager,
     )
-    setattr(agent, "invalid_skills", tuple(skill_result.invalid))
+    setattr(agent, "invalid_skills", invalid)
+    setattr(agent, "skill_catalogue", catalogue)
     return agent
 
 

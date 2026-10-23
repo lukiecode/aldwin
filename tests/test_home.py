@@ -139,19 +139,19 @@ def test_ensure_home_creates_subdirs_with_0700_and_copies_assets(
 def test_ensure_home_preserves_user_edits_and_adds_missing_assets(
     aldwin_home: Path,
 ) -> None:
-    """TC-03: User edit to persona.md is kept while missing asset is restored."""
+    """TC-03: User edit to persona.md is kept; defaults are not copied into skills/."""
     ensure_home()
     persona_path = aldwin_home / "persona.md"
     skill_path = aldwin_home / "skills" / "using-aldwin" / "SKILL.md"
 
     persona_path.write_text("Custom persona\n", encoding="utf-8")
-    skill_path.unlink()
+    assert not skill_path.exists()
 
     created = ensure_home()
     assert created is False
     assert persona_path.read_text(encoding="utf-8") == "Custom persona\n"
-    assert skill_path.is_file()
-    assert (skill_path.stat().st_mode & 0o777) == 0o600
+    # Packaged defaults stay in the package; ensure_home never restores them.
+    assert not skill_path.exists()
 
 
 def test_ensure_home_repairs_loose_directory_permissions(

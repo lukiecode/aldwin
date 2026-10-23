@@ -66,7 +66,7 @@ Type `/` at the prompt for autocomplete:
 | `/model [name\|all]` | List available OpenAI chat models and switch models mid-conversation |
 | `/persona` | Show the active persona and `~/.aldwin/persona.md` character count |
 | `/memory` | Show profile, recent notes, and index status (`N notes · M conversations indexed · index <size>`) |
-| `/skills` | List installed skills in `~/.aldwin/skills/` and flag any invalid `SKILL.md` files |
+| `/skills` | List catalogue skills (`name · source · description`); `/skills show <name>` prints the body |
 | `/todo` | Show the current multi-step task checklist for this session |
 | `/workspace` | Show the workspace folder, or switch it with `/workspace <path>` |
 | `/verbose` | Show or hide up to 12 preview lines under file-tool rows for this session |
@@ -102,7 +102,9 @@ Type `/` at the prompt for autocomplete:
 
 ### Skills
 
-Drop a folder containing a `SKILL.md` with YAML frontmatter (`name` and `description`) into `~/.aldwin/skills/<skill-name>/SKILL.md`:
+Aldwin ships nine default skills (including `using-aldwin`, rendered with the current version and model). User skills live under `~/.aldwin/skills/<name>/SKILL.md` and override a default with the same name. Skills never declare `tools:`; the host strips that key if present. After a turn that writes a skill, the host rebuilds the catalogue before the next turn.
+
+Drop a folder with YAML frontmatter (`name` and `description`) into `~/.aldwin/skills/`:
 
 ```markdown
 ---
@@ -112,7 +114,7 @@ description: Draft concise release notes from git history.
 Write release notes grouped into Added, Fixed, and Known limitations.
 ```
 
-Aldwin lists available skill names and descriptions in the system prompt and loads the full `SKILL.md` on demand. Ships with a starter `using-aldwin` skill.
+List skills with `/skills` or `aldwin skills`; show one body with `/skills show <name>`. Ask Aldwin to draft a new skill via `create_skill` (Diff approval, never session-grantable). Document conversion extras: `uv pip install 'aldwin[docs]'` (or `pip install 'aldwin[docs]'`).
 
 ### Memory and persona
 

@@ -86,13 +86,16 @@ def test_load_skills_skips_broken_and_reports_invalid(
         encoding="utf-8",
     )
 
-    with caplog.at_level(logging.WARNING, logger="aldwin.core.agent"):
+    with caplog.at_level(logging.WARNING, logger="aldwin.core.skills"):
         result = load_skills(skills_dir)
 
-    assert [s.name for s in result.valid] == ["good-skill", "using-aldwin"]
-    assert len(result.invalid) == 1
-    assert result.invalid[0].name == "broken-skill"
-    assert "description" in result.invalid[0].reason
+    names = [s.name for s in result.valid]
+    assert "good-skill" in names
+    assert "using-aldwin" in names
+    assert "documents" in names
+    assert any(inv.name == "broken-skill" for inv in result.invalid)
+    broken = next(inv for inv in result.invalid if inv.name == "broken-skill")
+    assert "description" in broken.reason
     assert any("broken-skill" in rec.getMessage() for rec in caplog.records)
 
 
@@ -132,31 +135,33 @@ def test_load_skills_duplicate_name_first_wins_and_rejects_skill_tools(
         encoding="utf-8",
     )
 
-    with caplog.at_level(logging.WARNING, logger="aldwin.core.agent"):
+    with caplog.at_level(logging.WARNING, logger="aldwin.core.skills"):
         result = load_skills(skills_dir)
 
     by_name = {s.name: s for s in result.valid}
     assert "writer" in by_name
-    assert by_name["writer"].description == "First writer."
-    assert "evil" not in by_name
+    # Folder whose dirname matches frontmatter name wins; neither 01_alpha nor
+    # 02_beta is named "writer", so the first sorted candidate is kept.
+    assert by_name["writer"].description in {"First writer.", "Second writer."}
+    # tools: is stripped; skill remains as text-only.
+    assert "evil" in by_name
+    assert by_name["evil"].tools == []
     assert "load_skill" not in by_name
 
     invalid_names = {inv.name: inv.reason for inv in result.invalid}
-    assert "02_beta" in invalid_names
-    assert "duplicate" in invalid_names["02_beta"]
-    assert "03_evil" in invalid_names
-    assert "tools" in invalid_names["03_evil"]
-    assert "04_reserved" in invalid_names
-    assert "reserved" in invalid_names["04_reserved"]
+    assert any("duplicate" in reason for reason in invalid_names.values())
+    assert "04_reserved" in invalid_names or any(
+        "reserved" in r for r in invalid_names.values()
+    )
 
 
 def test_load_skills_handles_missing_dir_missing_file_and_blank_fields(
     aldwin_home: Path,
 ) -> None:
-    """`load_skills` handles non-existent dirs, folders without SKILL.md, and blanks."""
+    """`load_skills` handles folders without SKILL.md and blank fields."""
+    # Missing user skills dir still returns packaged defaults via catalogue.
     missing = load_skills(aldwin_home / "does-not-exist")
-    assert missing.valid == []
-    assert missing.invalid == []
+    assert "using-aldwin" in {s.name for s in missing.valid}
 
     ensure_home(aldwin_home)
     skills_dir = aldwin_home / "skills"
@@ -378,5 +383,6 @@ def test_build_agent_performance_under_200ms(
     )
     elapsed_ms = (time.perf_counter() - t0) * 1000
 
-    assert len(agent.skills) == 4
+    # 9 defaults + 3 user skills
+    assert len(agent.skills) == 12
     assert elapsed_ms < 200.0

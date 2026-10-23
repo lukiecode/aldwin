@@ -31,6 +31,7 @@ from agentling.memory import FinalStep
 from agentling.models import Usage
 from agentling.tools import ToolCallError
 
+import aldwin
 from aldwin.core.agent import (
     AnyAskFn,
     build_agent,
@@ -52,6 +53,12 @@ from aldwin.core.policy import (
     sanitize_display_text,
 )
 from aldwin.core.settings import load_config, load_secrets, update_config_model
+from aldwin.core.skills import (
+    LoadedSkill,
+    build_catalogue,
+    skills_fingerprint,
+    to_catalog_items,
+)
 from aldwin.core.tools import RememberTool, summarize_tool_result
 from aldwin.core.tools import documents as document_tools
 from aldwin.core.tools import download as download_tools
@@ -86,8 +93,10 @@ from aldwin.protocol import (
     NoticeEvent,
     Request,
     SetModelRequest,
+    SkillBodyEvent,
     SkillsEvent,
     SkillsListRequest,
+    SkillsShowRequest,
     StatusEvent,
     StopRequest,
     TextEvent,
@@ -100,6 +109,7 @@ from aldwin.protocol import (
     ToolResultEvent,
     TurnRequest,
 )
+from aldwin.protocol.messages import SkillCatalogItem
 
 logger = logging.getLogger("aldwin.host.runner")
 
@@ -530,6 +540,9 @@ class AldwinHost:
         self._turn_task: asyncio.Task[None] | None = None
         self._serve_task: asyncio.Task[None] | None = None
         self._todo: list[dict[str, str]] = list(self._stored_session.todo or [])
+        self._host_flags: dict[str, bool] = {"skills_dirty": False}
+        self._skills_fingerprint: tuple[tuple[str, int, int], ...] = ()
+        self._skill_catalogue: list[LoadedSkill] = []
 
         self._approvals = ApprovalBroker(
             self._transport.send_event,
@@ -540,6 +553,7 @@ class AldwinHost:
             self._agent,
             self._stored_session.memory.dump_json(),
         )
+        self._refresh_skill_state_from_agent()
 
         self._transport.set_new_conversation_handler(self.new_conversation)
 
@@ -615,7 +629,46 @@ class AldwinHost:
             policy_session=self._policy_session,
             approval_log=self._approval_log,
             session_id_getter=lambda: self._stored_session.meta.id,
+            host_flags=self._host_flags,
         )
+
+    def _refresh_skill_state_from_agent(self) -> None:
+        """Cache catalogue and disk fingerprint after an Agent build."""
+        catalogue = getattr(self._agent, "skill_catalogue", None)
+        if catalogue is None:
+            catalogue = build_catalogue(
+                self._home,
+                version=aldwin.__version__,
+                model=self._model,
+            )
+            setattr(self._agent, "skill_catalogue", catalogue)
+        self._skill_catalogue = list(catalogue)
+        self._skills_fingerprint = skills_fingerprint(self._home)
+        self._host_flags["skills_dirty"] = False
+
+    def _skills_event(self, re_id: str) -> SkillsEvent:
+        """Build a `skills` event from the cached catalogue."""
+        items = [
+            SkillCatalogItem.model_validate(row)
+            for row in to_catalog_items(self._skill_catalogue)
+        ]
+        return SkillsEvent(re=re_id, items=items)
+
+    def _rebuild_agent_for_skills(self) -> None:
+        """Rebuild Agent and migrate Memory after skill changes."""
+        raw = self._agent_session.memory.dump_json()
+        self._agent = self._build_and_attach_agent(self._model)
+        self._agent_session = restore_session(self._agent, raw)
+        self._refresh_skill_state_from_agent()
+        self._persist_session(interrupted=self._stored_session.meta.interrupted)
+
+    def _maybe_rebuild_skills_from_disk(self) -> bool:
+        """Rebuild if user skill files changed since the last catalogue build."""
+        current = skills_fingerprint(self._home)
+        if current == self._skills_fingerprint:
+            return False
+        self._rebuild_agent_for_skills()
+        return True
 
     def _build_and_attach_agent(self, model_name: str) -> Agent:
         """Build an `Agent` and attach the host's retry and session callbacks."""
@@ -789,8 +842,30 @@ class AldwinHost:
             elif isinstance(req, SetModelRequest):
                 await self._handle_set_model(scope, req)
             elif isinstance(req, SkillsListRequest):
-                await scope.emit(SkillsEvent(re=req.id, items=[]))
+                self._maybe_rebuild_skills_from_disk()
+                await scope.emit(self._skills_event(req.id))
                 await scope.done("ok")
+            elif isinstance(req, SkillsShowRequest):
+                self._maybe_rebuild_skills_from_disk()
+                wanted = req.name.strip()
+                match = next(
+                    (s for s in self._skill_catalogue if s.name == wanted),
+                    None,
+                )
+                if match is None or match.skill is None:
+                    await scope.error(
+                        "not_found",
+                        f"No skill named {wanted!r}.",
+                    )
+                else:
+                    await scope.emit(
+                        SkillBodyEvent(
+                            re=req.id,
+                            name=match.name,
+                            body=match.body,
+                        )
+                    )
+                    await scope.done("ok")
             elif isinstance(req, TodoGetRequest):
                 await scope.emit(self._todo_event(req.id))
                 await scope.done("ok")
@@ -893,6 +968,7 @@ class AldwinHost:
 
         self._agent = self._build_and_attach_agent(self._model)
         self._agent_session = switch_session_model(self._agent_session, self._agent)
+        self._refresh_skill_state_from_agent()
         self._persist_session(interrupted=self._stored_session.meta.interrupted)
         await scope.done("ok")
 
@@ -903,6 +979,7 @@ class AldwinHost:
             self._active_turn_scope = scope
             self._circuit_breaker_tripped = False
             self._policy_session.reset_turn()
+            self._maybe_rebuild_skills_from_disk()
             self._agent_session._interrupt.clear()
             step_text_chunks: list[str] = []
             streamed_before_tools: str = ""
@@ -1067,6 +1144,12 @@ class AldwinHost:
                     "max_steps" if final_status == "max_steps" else "answered"
                 )
                 self._persist_session(interrupted=False)
+                # Rebuild after the turn loop (never mid-tool) and emit
+                # notice/skills before `done` so the door still receives them.
+                if self._host_flags.get("skills_dirty"):
+                    self._rebuild_agent_for_skills()
+                    await scope.emit(NoticeEvent(re=req.id, message="skills reloaded"))
+                    await scope.emit(self._skills_event(req.id))
                 await scope.done(reason, usage=_to_token_usage(final_usage))
 
             except asyncio.CancelledError:

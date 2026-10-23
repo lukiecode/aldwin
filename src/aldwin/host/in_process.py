@@ -78,15 +78,18 @@ class OnboardingStatus:
 
 @dataclass(frozen=True, slots=True)
 class SkillSummary:
-    """One valid skill entry returned for `/skills`."""
+    """One skill catalogue entry for `/skills` and `aldwin skills`."""
 
     name: str
     description: str
+    source: str = "default"
+    tools_removed: bool = False
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class InvalidSkillSummary:
-    """One invalid skill folder flagged for `/skills`."""
+    """One invalid skill folder flagged for `/skills` (legacy alias)."""
 
     name: str
     display_path: str
@@ -95,10 +98,10 @@ class InvalidSkillSummary:
 
 @dataclass(frozen=True, slots=True)
 class SkillsReport:
-    """Installed valid skills and invalid skill folders for `/skills`."""
+    """Skill catalogue rows for `/skills` (errors included as rows with `error`)."""
 
     valid: tuple[SkillSummary, ...]
-    invalid: tuple[InvalidSkillSummary, ...]
+    invalid: tuple[InvalidSkillSummary, ...] = ()
 
 
 def get_onboarding_status(home: Path | None = None) -> OnboardingStatus:
@@ -188,23 +191,39 @@ def save_setup(
 
 
 def get_skills_report(home: Path | None = None) -> SkillsReport:
-    """Load and validate skills in `~/.aldwin/skills/` for `/skills`."""
-    from aldwin.core.agent import SKILLS_SUBDIR, load_skills
+    """Build the skill catalogue (defaults + user) for `/skills`."""
+    import aldwin
+    from aldwin.core.settings import load_config
+    from aldwin.core.skills import build_catalogue, to_catalog_items
 
     root = (home if home is not None else home_dir()).expanduser().resolve()
-    result = load_skills(root / SKILLS_SUBDIR)
-    valid = tuple(
-        SkillSummary(name=s.name, description=s.description) for s in result.valid
+    config = load_config(root)
+    catalogue = build_catalogue(
+        root,
+        version=aldwin.__version__,
+        model=config.model,
     )
-    invalid = tuple(
-        InvalidSkillSummary(
-            name=inv.name,
-            display_path=format_home_path(inv.path),
-            reason=inv.reason,
+    rows: list[SkillSummary] = []
+    invalid: list[InvalidSkillSummary] = []
+    for item in to_catalog_items(catalogue):
+        err = item.get("error")
+        summary = SkillSummary(
+            name=str(item["name"]),
+            description=str(item.get("description") or ""),
+            source=str(item.get("source") or "default"),
+            tools_removed=bool(item.get("tools_removed")),
+            error=str(err) if err else None,
         )
-        for inv in result.invalid
-    )
-    return SkillsReport(valid=valid, invalid=invalid)
+        rows.append(summary)
+        if summary.error:
+            invalid.append(
+                InvalidSkillSummary(
+                    name=summary.name,
+                    display_path=format_home_path(root / "skills" / summary.name),
+                    reason=summary.error,
+                )
+            )
+    return SkillsReport(valid=tuple(rows), invalid=tuple(invalid))
 
 
 def purge_home_data(home: Path | None = None) -> Path:

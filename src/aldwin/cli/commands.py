@@ -255,24 +255,37 @@ def _render_memory(client: SlashCommandClient, renderer: ChatRenderer) -> None:
     )
 
 
-def _render_skills(client: SlashCommandClient, renderer: ChatRenderer) -> None:
-    console = renderer.console
-    report = client.skills_report()
-    console.print(Text("Skills:", style="muted"))
-    if report.valid:
-        grid = Table.grid(padding=(0, 2))
-        grid.add_column(style="fg", no_wrap=True)
-        grid.add_column(style="muted")
-        for skill in report.valid:
-            grid.add_row(f"  • {skill.name}", skill.description)
-        console.print(grid)
-    else:
-        console.print(Text("  (no valid skills installed)", style="muted"))
+SKILLS_FOOTER: Final[str] = (
+    "Add or edit skills in ~/.aldwin/skills/ · delete a user copy to restore "
+    "the default · type @ to pick one"
+)
 
-    for inv in report.invalid:
-        err_line = Text("  ✗ ", style="err")
-        err_line.append(f"{inv.name} (invalid: {inv.reason})", style="err")
-        console.print(err_line)
+
+def render_skills_report(report: SkillsReport, console: object) -> None:
+    """Print `/skills` rows: `name · source · description` (and error rows)."""
+    from rich.console import Console
+
+    rich_console = console if isinstance(console, Console) else Console()
+    if not report.valid:
+        rich_console.print(Text("  (no skills)", style="muted"))
+    for skill in report.valid:
+        if skill.error:
+            line = Text(f"{skill.name} · error: {skill.error}", style="err")
+            rich_console.print(line)
+            continue
+        desc = skill.description
+        if len(desc) > 80:
+            desc = desc[:79] + "…"
+        source = skill.source
+        if skill.tools_removed:
+            source = f"{source} · tools removed"
+        rich_console.print(Text(f"{skill.name} · {source} · {desc}", style="fg"))
+    rich_console.print(Text(SKILLS_FOOTER, style="muted"))
+
+
+def _render_skills(client: SlashCommandClient, renderer: ChatRenderer) -> None:
+    report = client.skills_report()
+    render_skills_report(report, renderer.console)
 
 
 def _render_workspace(
@@ -378,6 +391,48 @@ async def handle_slash_command(
         return False
 
     if cmd == "/skills":
+        if arg.lower().startswith("show"):
+            name = arg[4:].strip()
+            if not name:
+                renderer.console.print(Text("Usage: /skills show <name>", style="warn"))
+                return False
+            show_fn = getattr(client, "skills_show", None)
+            if show_fn is None:
+                renderer.console.print(
+                    Text("Skill body lookup is unavailable.", style="warn")
+                )
+                return False
+            try:
+                body_event = await show_fn(name)
+            except ProtocolError as exc:
+                renderer.console.print(Text(str(exc), style="err"))
+                return False
+            body = getattr(body_event, "body", None)
+            if body is None:
+                renderer.console.print(Text(f"No skill named {name!r}.", style="err"))
+                return False
+            renderer.console.print(Text(str(body), style="fg"))
+            return False
+        list_fn = getattr(client, "skills_list", None)
+        if list_fn is not None:
+            try:
+                event = await list_fn()
+                from aldwin.client import SkillsReport, SkillSummary
+
+                rows = tuple(
+                    SkillSummary(
+                        name=item.name,
+                        description=item.description,
+                        source=item.source,
+                        tools_removed=item.tools_removed,
+                        error=item.error,
+                    )
+                    for item in event.items
+                )
+                render_skills_report(SkillsReport(valid=rows), renderer.console)
+                return False
+            except ProtocolError as exc:
+                renderer.console.print(Text(str(exc), style="warn"))
         _render_skills(client, renderer)
         return False
 

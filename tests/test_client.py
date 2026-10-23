@@ -191,7 +191,7 @@ async def test_open_in_process_client_and_inspect_helpers(
         skills = client.skills_report()
         assert any(s.name == "using-aldwin" for s in skills.valid)
         tools = client.tools_summary()
-        assert len(tools) == 17
+        assert len(tools) == 18
         assert {t.name for t in tools} >= {"todo", "calculate"}
 
 

@@ -48,6 +48,13 @@ Issues = "https://github.com/lunarstack-co/aldwin/issues"
 Changelog = "https://github.com/lunarstack-co/aldwin/blob/main/CHANGELOG.md"
 Documentation = "https://github.com/lunarstack-co/aldwin#readme"
 
+[project.optional-dependencies]
+docs = [
+    "python-docx>=1.1,<2",
+    "openpyxl>=3.1,<4",
+    "reportlab>=4,<5",
+]
+
 [project.scripts]
 aldwin = "aldwin.cli.main:app"
 

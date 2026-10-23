@@ -333,7 +333,7 @@ DEFAULT_MAX_OUTPUT_CHARS_BY_TOOL: Final[dict[str, int]] = {
     "edit_file": 4_000,
     "write_file": 4_000,
     "download_file": 1_000,
-    "create_skill": 4_000,
+    "create_skill": 500,
     "set_persona": 4_000,
 }
 

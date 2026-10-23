@@ -37,6 +37,7 @@ ErrorCode = Literal[
     "model_unavailable",
     "auth_failed",
     "rate_limited",
+    "not_found",
     "internal",
 ]
 
@@ -158,6 +159,13 @@ class SkillsListRequest(RequestBase):
     type: Literal["skills.list"] = "skills.list"
 
 
+class SkillsShowRequest(RequestBase):
+    """Request the effective body of one skill for `/skills show`."""
+
+    type: Literal["skills.show"] = "skills.show"
+    name: str = Field(min_length=1)
+
+
 class TodoGetRequest(RequestBase):
     """Request the current session todo list from the host."""
 
@@ -172,6 +180,7 @@ Request = Annotated[
     | HistoryRequest
     | SetModelRequest
     | SkillsListRequest
+    | SkillsShowRequest
     | TodoGetRequest,
     Field(discriminator="type"),
 ]
