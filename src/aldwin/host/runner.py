@@ -56,9 +56,12 @@ from aldwin.core.settings import load_config, load_secrets, update_config_model
 from aldwin.core.skills import (
     LoadedSkill,
     build_catalogue,
+    build_task,
+    resolve_picked_skills,
     skills_fingerprint,
     to_catalog_items,
 )
+from aldwin.core.skills_recent import load_skills_recent, record_skills_used
 from aldwin.core.tools import RememberTool, summarize_tool_result
 from aldwin.core.tools import documents as document_tools
 from aldwin.core.tools import download as download_tools
@@ -83,6 +86,7 @@ from aldwin.protocol import (
     ApproveRequest,
     DoneEvent,
     DoneReason,
+    DroppedSkill,
     ErrorCode,
     ErrorEvent,
     Event,
@@ -97,6 +101,7 @@ from aldwin.protocol import (
     SkillsEvent,
     SkillsListRequest,
     SkillsShowRequest,
+    SkillsUsedEvent,
     StatusEvent,
     StopRequest,
     TextEvent,
@@ -648,9 +653,10 @@ class AldwinHost:
 
     def _skills_event(self, re_id: str) -> SkillsEvent:
         """Build a `skills` event from the cached catalogue."""
+        recent = load_skills_recent(self._home)
         items = [
             SkillCatalogItem.model_validate(row)
-            for row in to_catalog_items(self._skill_catalogue)
+            for row in to_catalog_items(self._skill_catalogue, last_used=recent)
         ]
         return SkillsEvent(re=re_id, items=items)
 
@@ -916,6 +922,7 @@ class AldwinHost:
         messages = self._session_store.render_history(
             self._agent_session.memory,
             limit=req.limit,
+            turns=self._stored_session.turns,
         )
         await scope.emit(
             HistoryEvent(
@@ -989,9 +996,38 @@ class AldwinHost:
             final_status: str = "completed"
             final_usage: Usage | None = None
 
+            picked: list[LoadedSkill] = []
+            if self._negotiated_version >= 2:
+                picked, dropped_pairs = resolve_picked_skills(
+                    list(req.skills),
+                    self._skill_catalogue,
+                )
+                dropped = [
+                    DroppedSkill(name=name, reason=reason)
+                    for name, reason in dropped_pairs
+                ]
+                await scope.emit(
+                    SkillsUsedEvent(
+                        re=req.id,
+                        names=[entry.name for entry in picked],
+                        dropped=dropped,
+                    )
+                )
+                if picked:
+                    record_skills_used(self._home, [entry.name for entry in picked])
+            task_text = build_task(req.text, picked)
+            if self._stored_session.turns is None:
+                self._stored_session.turns = []
+            self._stored_session.turns.append(
+                {
+                    "text": req.text,
+                    "skills": [entry.name for entry in picked],
+                }
+            )
+
             try:
                 async for ev in self._agent_session.run(
-                    req.text,
+                    task_text,
                     stream=True,
                     reset=False,
                 ):

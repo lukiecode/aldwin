@@ -30,7 +30,7 @@ SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
     ("/model", "Switch the OpenAI chat model"),
     ("/persona", "Show current persona and file path"),
     ("/memory", "Show profile, recent notes, and index status"),
-    ("/skills", "List installed skills"),
+    ("/skills", "List skills · /skills show <name> for the body"),
     ("/todo", "Show the current task checklist"),
     ("/workspace", "Show or switch the workspace folder"),
     ("/verbose", "Show or hide file previews for this session"),
@@ -41,9 +41,10 @@ SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
 KEYBINDINGS_HELP: Final[tuple[tuple[str, str], ...]] = (
     ("Enter", "Send message"),
     ("Alt+Enter / Ctrl+J / \\+Enter", "Insert a new line"),
-    ("Esc", "Stop the current answer or decline approval"),
+    ("@", "Open the skill picker (then Tab to insert)"),
+    ("Esc", "Close skill picker, stop answer, or decline approval"),
     ("?", "Show keyboard shortcuts (when prompt is empty)"),
-    ("↑ / ↓", "Previous / next message in history"),
+    ("↑ / ↓", "Previous / next message in history (or move in @ list)"),
     ("Ctrl+R", "Search input history"),
     ("Ctrl+C twice / Ctrl+D", "Save and exit"),
 )
@@ -269,17 +270,29 @@ def render_skills_report(report: SkillsReport, console: object) -> None:
     if not report.valid:
         rich_console.print(Text("  (no skills)", style="muted"))
     for skill in report.valid:
-        if skill.error:
-            line = Text(f"{skill.name} · error: {skill.error}", style="err")
+        error = getattr(skill, "error", None)
+        if error:
+            line = Text(f"{skill.name} · error: {error}", style="err")
             rich_console.print(line)
             continue
-        desc = skill.description
+        from aldwin.client import sanitize_display_text
+
+        name = sanitize_display_text(skill.name)
+        desc = sanitize_display_text(skill.description)
         if len(desc) > 80:
             desc = desc[:79] + "…"
-        source = skill.source
-        if skill.tools_removed:
+        source = sanitize_display_text(skill.source)
+        flags = getattr(skill, "flags", ())
+        extra = [
+            sanitize_display_text(str(f))
+            for f in flags
+            if f != "tools removed" and not str(f).startswith("error:")
+        ]
+        if getattr(skill, "tools_removed", False) or "tools removed" in flags:
             source = f"{source} · tools removed"
-        rich_console.print(Text(f"{skill.name} · {source} · {desc}", style="fg"))
+        if extra:
+            source = f"{source} · " + " · ".join(extra)
+        rich_console.print(Text(f"{name} · {source} · {desc}", style="fg"))
     rich_console.print(Text(SKILLS_FOOTER, style="muted"))
 
 
@@ -411,7 +424,9 @@ async def handle_slash_command(
             if body is None:
                 renderer.console.print(Text(f"No skill named {name!r}.", style="err"))
                 return False
-            renderer.console.print(Text(str(body), style="fg"))
+            from aldwin.client import sanitize_display_text
+
+            renderer.console.print(Text(sanitize_display_text(str(body)), style="fg"))
             return False
         list_fn = getattr(client, "skills_list", None)
         if list_fn is not None:
@@ -424,8 +439,8 @@ async def handle_slash_command(
                         name=item.name,
                         description=item.description,
                         source=item.source,
-                        tools_removed=item.tools_removed,
-                        error=item.error,
+                        flags=tuple(item.flags),
+                        last_used=item.last_used,
                     )
                     for item in event.items
                 )

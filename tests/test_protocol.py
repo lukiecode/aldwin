@@ -16,6 +16,7 @@ from aldwin.protocol import (
     ApprovalEvent,
     ApproveRequest,
     DoneEvent,
+    DroppedSkill,
     ErrorEvent,
     Event,
     HelloRequest,
@@ -350,10 +351,16 @@ def test_protocol_v2_messages_round_trip() -> None:
                     name="files",
                     description="Work with files safely.",
                     source="default",
+                    flags=[],
+                    last_used=None,
                 )
             ],
         ),
-        SkillsUsedEvent(re="req_t2", names=["files"], dropped=["missing"]),
+        SkillsUsedEvent(
+            re="req_t2",
+            names=["files"],
+            dropped=[DroppedSkill(name="missing", reason="unknown")],
+        ),
         SkillBodyEvent(re="req_sl", name="files", body="# Files skill"),
         NoticeEvent(re="req_t2", message="skills reloaded"),
     ]

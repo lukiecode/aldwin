@@ -156,11 +156,11 @@ async def test_fake_host_records_requests_and_yields_events(
     assert fake_host.requests == [
         ("connect",),
         ("history", 20),
-        ("turn", "check disk"),
+        ("turn", "check disk", []),
         ("approve", "ap_42", "yes"),
         ("stop",),
         ("set_model", "gpt-4.1"),
         ("set_model", "not-a-model"),
         ("new_conversation",),
-        ("turn", "default turn"),
+        ("turn", "default turn", []),
     ]

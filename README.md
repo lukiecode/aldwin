@@ -67,6 +67,7 @@ Type `/` at the prompt for autocomplete:
 | `/persona` | Show the active persona and `~/.aldwin/persona.md` character count |
 | `/memory` | Show profile, recent notes, and index status (`N notes · M conversations indexed · index <size>`) |
 | `/skills` | List catalogue skills (`name · source · description`); `/skills show <name>` prints the body |
+| `@` | Skill picker in the chat input (recent first, Tab to insert); picked skills apply to that message only |
 | `/todo` | Show the current multi-step task checklist for this session |
 | `/workspace` | Show the workspace folder, or switch it with `/workspace <path>` |
 | `/verbose` | Show or hide up to 12 preview lines under file-tool rows for this session |
@@ -114,7 +115,7 @@ description: Draft concise release notes from git history.
 Write release notes grouped into Added, Fixed, and Known limitations.
 ```
 
-List skills with `/skills` or `aldwin skills`; show one body with `/skills show <name>`. Ask Aldwin to draft a new skill via `create_skill` (Diff approval, never session-grantable). Document conversion extras: `uv pip install 'aldwin[docs]'` (or `pip install 'aldwin[docs]'`).
+List skills with `/skills` or `aldwin skills`; show one body with `/skills show <name>`. Type `@` in chat to pick a skill for the current message (up to three). Ask Aldwin to draft a new skill via `create_skill` (Diff approval, never session-grantable). Document conversion extras: `uv pip install 'aldwin[docs]'` (or `pip install 'aldwin[docs]'`).
 
 ### Memory and persona
 

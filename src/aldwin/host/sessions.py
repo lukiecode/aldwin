@@ -76,6 +76,8 @@ class StoredSession:
     meta: SessionMeta
     memory: Memory
     todo: list[dict[str, str]] | None = None
+    # Parallel to TaskSteps: original user text + resolved skill names (not bodies).
+    turns: list[dict[str, Any]] | None = None
 
 
 def _normalise_todo_payload(raw: Any) -> list[dict[str, str]]:
@@ -91,6 +93,24 @@ def _normalise_todo_payload(raw: Any) -> list[dict[str, str]]:
         if not isinstance(text, str) or not isinstance(status, str):
             return []
         items.append({"text": text, "status": status})
+    return items
+
+
+def _normalise_turns_payload(raw: Any) -> list[dict[str, Any]]:
+    """Parse session `turns` into `[{text, skills}]` (skills names only)."""
+    if not isinstance(raw, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            return []
+        text = entry.get("text")
+        skills = entry.get("skills", [])
+        if not isinstance(text, str):
+            return []
+        if not isinstance(skills, list) or not all(isinstance(s, str) for s in skills):
+            return []
+        items.append({"text": text, "skills": list(skills)})
     return items
 
 
@@ -148,6 +168,8 @@ class SessionStore:
         }
         if stored.todo:
             payload["todo"] = stored.todo
+        if stored.turns:
+            payload["turns"] = stored.turns
         serialized = json.dumps(payload, indent=2) + "\n"
         atomic_write(stored.path, serialized, mode=FILE_MODE)
 
@@ -204,7 +226,14 @@ class SessionStore:
                 interrupted=interrupted,
             )
             todo = _normalise_todo_payload(raw_obj.get("todo"))
-            return StoredSession(path=path, meta=meta, memory=memory, todo=todo or None)
+            turns = _normalise_turns_payload(raw_obj.get("turns"))
+            return StoredSession(
+                path=path,
+                meta=meta,
+                memory=memory,
+                todo=todo or None,
+                turns=turns or None,
+            )
         except (
             OSError,
             json.JSONDecodeError,
@@ -220,15 +249,27 @@ class SessionStore:
         self,
         memory: Memory,
         limit: int = 20,
+        turns: list[dict[str, Any]] | None = None,
     ) -> list[HistoryItem]:
-        """Render the last `limit` user/assistant messages with tool summaries."""
+        """Render the last `limit` user/assistant messages with tool summaries.
+
+        When `turns` is provided, user rows use the original typed text instead
+        of any `<picked_skills>` injection stored in Agentling `TaskStep.task`.
+        """
         if limit < 1:
             return []
 
         items: list[HistoryItem] = []
+        turn_idx = 0
         for step in memory.steps:
             if isinstance(step, TaskStep):
-                items.append(HistoryItem(role="user", text=step.task))
+                text = step.task
+                if turns is not None and turn_idx < len(turns):
+                    stored = turns[turn_idx].get("text")
+                    if isinstance(stored, str):
+                        text = stored
+                turn_idx += 1
+                items.append(HistoryItem(role="user", text=text))
             elif isinstance(step, ActionStep):
                 for result in step.tool_results:
                     if result.name == "final_answer" and not result.is_error:

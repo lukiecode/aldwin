@@ -83,8 +83,21 @@ class SkillSummary:
     name: str
     description: str
     source: str = "default"
-    tools_removed: bool = False
-    error: str | None = None
+    flags: tuple[str, ...] = ()
+    last_used: str | None = None
+
+    @property
+    def error(self) -> str | None:
+        """First `error: …` flag reason, if any."""
+        for flag in self.flags:
+            if flag.startswith("error:"):
+                return flag.removeprefix("error:").strip()
+        return None
+
+    @property
+    def tools_removed(self) -> bool:
+        """True when the catalogue marked `tools removed`."""
+        return "tools removed" in self.flags
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,13 +219,18 @@ def get_skills_report(home: Path | None = None) -> SkillsReport:
     rows: list[SkillSummary] = []
     invalid: list[InvalidSkillSummary] = []
     for item in to_catalog_items(catalogue):
-        err = item.get("error")
+        raw_flags = item.get("flags") or ()
+        if isinstance(raw_flags, list | tuple):
+            flags = tuple(str(f) for f in raw_flags)
+        else:
+            flags = ()
+        last = item.get("last_used")
         summary = SkillSummary(
             name=str(item["name"]),
             description=str(item.get("description") or ""),
             source=str(item.get("source") or "default"),
-            tools_removed=bool(item.get("tools_removed")),
-            error=str(err) if err else None,
+            flags=flags,
+            last_used=str(last) if last else None,
         )
         rows.append(summary)
         if summary.error:

@@ -386,9 +386,9 @@ def test_to_catalog_items_maps_flags(aldwin_home: Path) -> None:
         build_catalogue(aldwin_home, version="0.0.2", model="gpt-test")
     )
     fancy = next(i for i in items if i["name"] == "fancy")
-    assert fancy["tools_removed"] is True
+    assert "tools removed" in fancy["flags"]
     broken = next(i for i in items if i["name"] == "broken")
-    assert broken["error"]
+    assert any(str(f).startswith("error:") for f in broken["flags"])
 
 
 def test_skills_fingerprint_tracks_user_files(aldwin_home: Path) -> None:

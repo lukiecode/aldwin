@@ -26,6 +26,7 @@ SUBDIRS: Final[tuple[str, ...]] = (
     "memory/notes",
     "logs",
     "tmp",
+    "state",
 )
 
 STARTER_ASSETS: Final[tuple[tuple[str, str], ...]] = (

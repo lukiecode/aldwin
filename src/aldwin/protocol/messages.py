@@ -75,6 +75,9 @@ class TodoItem(BaseModel):
     status: TodoStatus = "pending"
 
 
+DroppedReason = Literal["unknown", "limit"]
+
+
 class SkillCatalogItem(BaseModel):
     """One skill descriptor in a `skills` event."""
 
@@ -83,8 +86,17 @@ class SkillCatalogItem(BaseModel):
     name: str
     description: str
     source: SkillSource = "default"
-    tools_removed: bool = False
-    error: str | None = None
+    flags: list[str] = Field(default_factory=list)
+    last_used: str | None = None
+
+
+class DroppedSkill(BaseModel):
+    """One `@`-picked skill name dropped during host validation."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    reason: DroppedReason
 
 
 class RequestBase(BaseModel):
@@ -262,7 +274,7 @@ class SkillsUsedEvent(EventBase):
 
     kind: Literal["skills.used"] = "skills.used"
     names: list[str] = Field(default_factory=list)
-    dropped: list[str] = Field(default_factory=list)
+    dropped: list[DroppedSkill] = Field(default_factory=list)
 
 
 class SkillBodyEvent(EventBase):
