@@ -124,9 +124,9 @@ def test_lexer_highlights_known_skill_token() -> None:
     lexer = SkillLexer(cache)
     get_line = lexer.lex_document(Document("Tidy @files please", 0))
     parts = get_line(0)
-    styles = [style for style, _text in parts]
+    styles = [part[0] for part in parts]
     assert "class:skill-token" in styles
-    joined = "".join(text for _style, text in parts)
+    joined = "".join(part[1] for part in parts)
     assert joined == "Tidy @files please"
 
 
@@ -135,7 +135,7 @@ def test_lexer_leaves_unknown_at_plain() -> None:
     lexer = SkillLexer(cache)
     get_line = lexer.lex_document(Document("see @unknown", 0))
     parts = get_line(0)
-    assert all(style == "" for style, _text in parts)
+    assert all(part[0] == "" for part in parts)
 
 
 def test_v1_completer_skips_skill_picker() -> None:
