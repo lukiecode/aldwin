@@ -249,6 +249,7 @@ def test_readme_contains_all_fr1_sections_and_doc_links() -> None:
         "https://astral.sh/uv/install.sh",
         "/help",
         "/new",
+        "/history",
         "/model",
         "/persona",
         "/memory",

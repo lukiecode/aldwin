@@ -12,6 +12,7 @@ from prompt_toolkit.document import Document
 from aldwin.cli.commands import SLASH_COMMANDS, SlashCompleter, handle_slash_command
 from aldwin.cli.render import ChatRenderer
 from aldwin.cli.theme import create_console
+from aldwin.protocol import HistoryEvent, HistoryItem
 
 
 async def _noop_prompt(_label: str) -> str:
@@ -206,7 +207,15 @@ async def test_slash_completer_and_inspect_commands() -> None:
         nonlocal tokens_reset
         tokens_reset = True
 
-    for cmd in ("/help", "/new", "/persona", "/memory", "/skills", "/tools"):
+    for cmd in (
+        "/help",
+        "/new",
+        "/history",
+        "/persona",
+        "/memory",
+        "/skills",
+        "/tools",
+    ):
         res = await handle_slash_command(
             cmd,
             client=client,
@@ -239,6 +248,36 @@ async def test_slash_completer_and_inspect_commands() -> None:
     assert "web_search" in text
     assert "run_command" in text and "always asks y/n" in text
     assert ("skills.list",) in client.requests
+
+
+async def test_history_command_prints_saved_messages() -> None:
+    """`/history` dumps the conversation transcript on demand."""
+    client = FakeClient(
+        history_event=HistoryEvent(
+            re="req_hist",
+            messages=[
+                HistoryItem(role="user", text="prior question"),
+                HistoryItem(role="assistant", text="prior answer"),
+            ],
+            interrupted=False,
+        )
+    )
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+
+    should_exit = await handle_slash_command(
+        "/history",
+        client=client,
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    assert should_exit is False
+    assert ("history", 500) in client.requests
+    text = console.export_text()
+    assert "> prior question" in text
+    assert "* prior answer" in text
+    assert "2 messages" in text
 
 
 async def test_skills_show_prints_body() -> None:

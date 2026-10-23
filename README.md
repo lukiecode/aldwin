@@ -30,13 +30,13 @@ aldwin
 
 ## First run
 
-Nothing runs during `uv tool install aldwin`. The first time you run `aldwin`, it sets up your private home folder at `~/.aldwin` (`0700` permissions) and walks through a 30-second setup:
+Nothing runs during `uv tool install aldwin`. The first time you run `aldwin`, it sets up your private home folder at `~/.aldwin` (`0700` permissions), shows a short ALDWIN wordmark and a one-screen primer, then asks only for what is missing:
 
-1. **OpenAI API key:** prompts for your key with hidden input (`••••`), tests it against OpenAI (`Checking key… ✓`), and saves it to `~/.aldwin/secrets.yaml` (`0600`). If `OPENAI_API_KEY` is already set in your environment, Aldwin uses it automatically and skips this prompt.
-2. **Tavily API key (optional):** prompts for a [Tavily](https://tavily.com) key for `web_search` (press `Enter` to skip; you can add one later with `aldwin setup`).
-3. **Default model:** saves a default OpenAI chat model (`gpt-4o`, changeable any time with `/model`) and opens the chat prompt.
+1. **OpenAI API key** (if unset): hidden input, `Checking key… ✓`, saved to `~/.aldwin/secrets.yaml` (`0600`). If `OPENAI_API_KEY` is already set, Aldwin verifies it and still shows the welcome + primer.
+2. **Tavily API key (optional):** press `Enter` to skip; add later with `aldwin setup`.
+3. Hands off to the live `❯` prompt (default model `gpt-4o`, changeable with `/model`).
 
-Every time you run `aldwin` after that, it shows your last 20 messages and continues the conversation where you left off.
+Later runs show a compact welcome card and a muted `continuing from …` line (no transcript dump). Use `/history` to review saved messages. Type while Aldwin is working to queue the next message (`Queued: …`); it sends automatically when the turn finishes.
 
 ---
 
@@ -63,6 +63,7 @@ Type `/` at the prompt for autocomplete:
 |---|---|
 | `/help` | Show slash commands and keyboard shortcuts |
 | `/new` | Start a fresh conversation (previous session stays saved on disk) |
+| `/history` | Show this conversation’s saved messages (up to 500) |
 | `/model [name\|all]` | List available OpenAI chat models and switch models mid-conversation |
 | `/persona` | Show the active persona and `~/.aldwin/persona.md` character count |
 | `/memory` | Show profile, recent notes, and index status (`N notes · M conversations indexed · index <size>`) |
@@ -78,13 +79,14 @@ Type `/` at the prompt for autocomplete:
 
 | Key | Action |
 |---|---|
-| `Enter` | Send message |
-| `Alt+Enter` / `Ctrl+J` / `\ + Enter` | Insert a new line |
-| `Esc` | Stop the current answer within 1 second (or decline a pending approval) |
-| `?` | Show keyboard shortcuts (when the prompt is empty) |
-| `↑` / `↓` | Navigate input history |
+| `Enter` | Send message (queues while a turn is running) |
+| `Alt+Enter` / `Shift+Enter` / `Ctrl+J` | Insert a new line |
+| `Esc` | Stop the current answer, close an overlay, or clear a draft (double-Esc) |
+| `?` | Shortcuts in the footer (when the prompt is empty) |
+| `↑` / `↓` | Navigate input history or move in slash / approval lists |
 | `Ctrl+R` | Reverse-search input history |
-| `Ctrl+C` twice / `Ctrl+D` | Save the conversation and exit |
+| `Ctrl+C` | Clear the draft; twice on an empty prompt saves and exits |
+| `Ctrl+D` | Save the conversation and exit |
 
 ---
 

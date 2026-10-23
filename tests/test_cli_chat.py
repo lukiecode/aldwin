@@ -111,7 +111,8 @@ async def test_chat_approval_yes_sends_approve_and_resumes(aldwin_home: Path) ->
     text = console.export_text()
     assert "Run this command?" in text
     assert "df -h" in text
-    assert "[N] no" in text
+    assert "Do you want to proceed?" in text
+    assert "No" in text
     assert "You have 41 GB free." in text
     assert "Saved. See you." in text
 
@@ -173,8 +174,8 @@ async def test_escape_during_stream_stops_under_one_second(aldwin_home: Path) ->
     assert client.stop_calls == 1
     assert elapsed < 1.0, f"Esc stop took {elapsed:.3f}s (budget < 1.0s)"
     text = console.export_text()
-    assert "Partial answer before stop *(stopped)*" in text
-    assert "(stopped)" in text
+    assert "Partial answer before stop" in text
+    assert "Interrupted · tell Aldwin what to do instead" in text
 
 
 async def test_prompt_input_bindings_empty_ignored_and_toolbar(
@@ -184,7 +185,7 @@ async def test_prompt_input_bindings_empty_ignored_and_toolbar(
     _ = aldwin_home
     assert (
         format_bottom_toolbar("gpt-4o", "2026-10-18_3f2a9b1c", 6200)
-        == " gpt-4o · 95% context left   ? shortcuts · esc stop "
+        == " ? for shortcuts   gpt-4o · ██████████95% context left "
     )
     assert (
         format_bottom_toolbar(
@@ -192,8 +193,9 @@ async def test_prompt_input_bindings_empty_ignored_and_toolbar(
             "2026-10-18_3f2a9b1c",
             6200,
             todo_label="Tasks 2/5",
+            plain=True,
         )
-        == " gpt-4o · 95% context left · Tasks 2/5   ? shortcuts · esc stop "
+        == " ? for shortcuts   gpt-4o · ##########95% context left · Tasks 2/5 "
     )
 
     boot = bootstrap(plain=True)
@@ -273,7 +275,8 @@ async def test_ctrl_c_once_warns_twice_quits_and_ctrl_d_saves_and_exits(
     assert rc_a == 0
     assert client_a.closed is True
     text_a = console_a.export_text()
-    assert "Press Ctrl-C again to quit" in text_a
+    # FR-4: Ctrl+C hint stays in the dock footer, not scrollback.
+    assert "Press Ctrl-C again to quit" not in text_a
     assert "Saved. See you." in text_a
 
     # Case B: Ctrl-D (EOF) saves and exits
@@ -363,7 +366,7 @@ async def test_ctrl_c_during_turn_stops_then_second_ctrl_c_quits(
     assert client.stop_calls >= 1
     assert client.closed is True
     text = console.export_text()
-    assert "Press Ctrl-C again to quit" in text
+    # FR-4: quit hint is footer-only; second Ctrl+C still exits.
     assert "Saved. See you." in text
 
 
@@ -381,7 +384,7 @@ async def test_backslash_enter_and_ctrl_j_insert_newlines_and_plain_style(
         assert session.style is PLAIN_PROMPT_STYLE
 
         pipe_in.send_text("first line\\\rsecond line\x0athird line\r")
-        result = await session.prompt_async("› ")
+        result = await session.prompt_async("❯ ")
         assert result == "first line\nsecond line\nthird line"
 
 

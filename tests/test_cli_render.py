@@ -88,8 +88,8 @@ def test_split_markdown_blocks_holds_unclosed_fence_in_remainder() -> None:
     assert "echo two" in remainder
 
 
-def test_render_history_last_20_dimmed_with_divider() -> None:
-    """20 history messages render dimmed in order followed by divider."""
+def test_render_history_quiet_on_open_hides_messages() -> None:
+    """Quiet reopen shows only continuing-from hint, not the transcript."""
     buf = io.StringIO()
     console = create_console(
         plain=False,
@@ -113,14 +113,37 @@ def test_render_history_last_20_dimmed_with_divider() -> None:
         event,
         updated_at="2026-10-17T18:02:00+00:00",
         now=now,
+        show_messages=False,
     )
 
     text = console.export_text()
-    assert "› message-6" in text
-    assert "message-25" in text
-    assert text.index("message-6") < text.index("message-25")
-    assert "continuing from yesterday 18:02" in text
+    assert "message-6" not in text
+    assert "message-25" not in text
+    assert "continuing from yesterday 18:02 · /history to review" in text
     assert "interrupted" not in text
+
+
+def test_render_history_full_shows_all_messages() -> None:
+    """`/history` path prints every message in the event."""
+    buf = io.StringIO()
+    console = create_console(width=80, record=True, file=buf)
+    renderer = ChatRenderer(console)
+    items = [
+        HistoryItem(role="user", text="hello"),
+        HistoryItem(role="assistant", text="hi there"),
+    ]
+    event = HistoryEvent(re="req_hist", messages=items, interrupted=False)
+    now = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+    renderer.render_history(
+        event,
+        updated_at="2026-10-17T18:02:00+00:00",
+        now=now,
+        show_messages=True,
+    )
+    text = console.export_text()
+    assert "❯ hello" in text
+    assert "● hi there" in text
+    assert "2 messages · from yesterday 18:02" in text
 
 
 def test_render_history_interrupted_notice_shown_once() -> None:
@@ -134,9 +157,10 @@ def test_render_history_interrupted_notice_shown_once() -> None:
         messages=[HistoryItem(role="user", text="check disk")],
         interrupted=True,
     )
-    renderer.render_history(event)
+    renderer.render_history(event, show_messages=False)
 
     text = console.export_text()
+    assert "check disk" not in text
     assert "Your last request was interrupted." in text
     assert "continue" in text
     assert text.count("Your last request was interrupted.") == 1
@@ -172,11 +196,11 @@ def test_turn_renderer_streams_three_markdown_blocks_with_code_fence() -> None:
         < text.index("def greet():")
         < text.index("Third final block.")
     )
-    assert "✓ done · 4s · 0 tools · 1.1k tokens" in text
+    assert "Worked for 4s · 1.1k tokens" in text
 
 
 def test_turn_renderer_tool_call_and_result_cards() -> None:
-    """tool_call and tool_result render ⚙, ✓, and ✗ cards with duration."""
+    """tool_call and tool_result render ●, ✓, and ✗ cards with human labels."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -191,7 +215,7 @@ def test_turn_renderer_tool_call_and_result_cards() -> None:
             args_preview='"Python 3.14"',
         )
     )
-    assert turn._spinner_text == "Running web_search…"
+    assert turn._spinner_text == "Running Search…"
 
     turn.on_tool_result(
         ToolResultEvent(
@@ -223,10 +247,10 @@ def test_turn_renderer_tool_call_and_result_cards() -> None:
     turn.finish_done(DoneEvent(re="r1", reason="answered"))
 
     text = console.export_text()
-    assert '⚙ web_search  "Python 3.14"' in text
-    assert "✓ web_search  1.2s · 5 results" in text
-    assert "✗ run_command  sudo is not allowed" in text
-    assert "✓ done · 5s · 2 tools" in text
+    assert "✓ Search  1.2s · 5 results" in text
+    assert "✗ shell" in text
+    assert "sudo is not allowed" in text
+    assert "Worked for 5s · 2 tools" in text
 
 
 def test_render_error_codes_map_to_house_copy() -> None:
@@ -299,7 +323,7 @@ def test_plain_mode_has_no_ansi_spinner_live_or_bell() -> None:
     assert "Paragraph one." in raw
     assert "Paragraph two." in raw
     assert "Run this command?" in raw
-    assert "✓ run_command  0.2s · exit 0" in raw
+    assert "✓ shell  exit 0" in raw
 
 
 def test_turn_renderer_status_ticker_retry_notice_and_max_steps() -> None:
@@ -319,7 +343,7 @@ def test_turn_renderer_status_ticker_retry_notice_and_max_steps() -> None:
             )
         )
     now = 12.4
-    assert turn.format_status_line() == "working · 12s · 3 tools"
+    assert turn.format_status_line() == "(12s · ↓ … tokens · esc to interrupt)"
 
     turn.on_status("OpenAI is busy, retrying (2 of 3)…")
     turn.finish_done(DoneEvent(re="r1", reason="max_steps"))
@@ -330,7 +354,7 @@ def test_turn_renderer_status_ticker_retry_notice_and_max_steps() -> None:
 
 
 def test_turn_renderer_flushes_narration_before_tool_card() -> None:
-    """Buffered text before a tool call prints above the ⚙ tool card."""
+    """Buffered text before a tool call prints above the tool card."""
     buf = io.StringIO()
     console = create_console(width=80, record=True, file=buf)
     renderer = ChatRenderer(console)
@@ -350,7 +374,7 @@ def test_turn_renderer_flushes_narration_before_tool_card() -> None:
 
     text = console.export_text()
     idx_narration = text.index("Let me check your disk usage.")
-    idx_tool = text.index("⚙ run_command")
+    idx_tool = text.index("✓ shell")
     idx_answer = text.index("You have 41 GB free.")
     assert idx_narration < idx_tool < idx_answer
 
@@ -403,7 +427,8 @@ def test_multiline_approval_panel_and_turn_close_cleanup() -> None:
     text = console.export_text()
     assert "Line one of new persona." in text
     assert "Line two of new persona." in text
-    assert "[N] no" in text
+    assert "Do you want to proceed?" in text
+    assert "No" in text
 
     turn = renderer.start_turn()
     assert turn._live is not None
@@ -556,24 +581,26 @@ def test_tool_result_80_cols_preserves_duration_and_summary() -> None:
 
     exported = console.export_text().splitlines()
     ok_lines = [
-        line[line.index("  ✓ run_command") :].rstrip()
+        line[line.index("  ✓ shell") :].rstrip()
         for line in exported
-        if "  ✓ run_command" in line
+        if "  ✓ shell" in line
     ]
     assert len(ok_lines) == 1
     assert len(ok_lines[0]) <= 80
-    assert ok_lines[0].startswith("  ✓ run_command  echo xxx")
-    assert ok_lines[0].endswith("0.1s · exit 0")
+    assert ok_lines[0].startswith("  ✓ shell  echo xxx")
+    # Sub-1s durations are omitted from the permanent row (FR-8).
+    assert ok_lines[0].endswith("exit 0")
 
     err_lines = [
-        line[line.index("  ✗ run_command") :].rstrip()
+        line[line.index("  ✗ shell") :].rstrip()
         for line in exported
-        if "  ✗ run_command" in line
+        if "  ✗ shell" in line
     ]
     assert len(err_lines) == 1
     assert len(err_lines[0]) <= 80
-    assert err_lines[0].startswith("  ✗ run_command  echo yyy")
-    assert err_lines[0].endswith("exit 1")
+    assert err_lines[0].startswith("  ✗ shell  echo yyy")
+    # FR-8: failure reason is on the following ⎿ line, not the glyph row.
+    assert any("exit 1" in line for line in exported)
 
 
 def test_approval_panel_strips_ansi_bidi_and_redacts_secrets() -> None:
@@ -625,7 +652,9 @@ def test_diff_approval_panel_folds_at_24_lines_and_expands() -> None:
     folded_text = console.export_text()
     assert "… 6 more lines (ctrl+o to expand)" in folded_text
     assert "+added line 26" not in folded_text
-    assert "[y] yes  [a] yes for this file this session  [N] no" in folded_text
+    assert "Do you want to proceed?" in folded_text
+    assert "Yes, for this session" in folded_text
+    assert "No" in folded_text
 
     buf_exp = io.StringIO()
     console_exp = create_console(width=80, record=True, file=buf_exp)
@@ -780,7 +809,7 @@ async def _noop_prompt(_label: str) -> str:
 
 
 def test_tc45_pending_glyph_and_plain() -> None:
-    """File tools use a bullet while they run. Other tools keep the gear."""
+    """All pending tools use a bullet; plain mode still shows human labels."""
     buf = io.StringIO()
     console = create_console(plain=True, width=80, record=True, file=buf)
     renderer = ChatRenderer(console, plain=True)
@@ -799,7 +828,8 @@ def test_tc45_pending_glyph_and_plain() -> None:
     )
     text = console.export_text()
     assert "● Read a.txt" in text
-    assert "⚙ web_search" in text
+    assert "● Search" in text
+    assert "⚙" not in text
     assert "Read .env · blocked: may contain secrets" in text
 
     color_buf = io.StringIO()

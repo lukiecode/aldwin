@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
@@ -15,14 +14,22 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.spinner import Spinner
 from rich.text import Text
 
 from aldwin.cli.theme import (
+    ACCENT_BRIGHT_RGB,
+    ACCENT_RGB,
+    GLYPH_FRAME_S,
+    SPINNER_FRAMES,
+    STALL_RED_RGB,
     format_duration_ms,
     format_elapsed_s,
     format_relative_time,
     format_tokens,
+    interpolate_rgb,
+    reduced_motion_preferred,
+    rgb_style,
+    sync_output_enabled,
 )
 from aldwin.cli.todo_view import TodoView
 from aldwin.client import sanitize_display_text
@@ -67,7 +74,41 @@ INTERRUPTED_NOTICE: Final[str] = (
     "Your last request was interrupted. Say *continue* to pick it up."
 )
 MAX_STEPS_NOTICE: Final[str] = "Stopped after 15 steps. Say *continue* to keep going."
-TIPS_LINE: Final[str] = 'Try: "what can you do?"  ·  /help  ·  Esc stops an answer'
+TIPS_LINE: Final[str] = (
+    'Try: "what can you do?"  ·  /help  ·  /history  ·  Esc stops an answer'
+)
+
+STALL_START_S: Final[float] = 8.0
+STALL_FULL_S: Final[float] = 12.0
+CSI_SYNC_START: Final[str] = "\x1b[?2026h"
+CSI_SYNC_END: Final[str] = "\x1b[?2026l"
+
+_HUMAN_TOOL_LABELS: Final[dict[str, str]] = {
+    "list_dir": "list",
+    "glob": "search",
+    "grep": "search",
+    "read_file": "Read",
+    "edit_file": "Edit",
+    "write_file": "Write",
+    "read_document": "Read",
+    "download_file": "Download",
+    "run_command": "shell",
+    "web_search": "Search",
+    "web_fetch": "Fetch",
+    "remember": "Remember",
+    "recall": "Recall",
+    "forget": "Forget",
+    "todo": "tasks",
+    "calculate": "Calculate",
+    "create_skill": "skill",
+    "set_persona": "persona",
+    "load_skill": "skill",
+}
+
+
+def human_tool_label(tool_name: str) -> str:
+    """Return a short human label for a tool identifier (never the raw id alone)."""
+    return _HUMAN_TOOL_LABELS.get(tool_name, tool_name.replace("_", " "))
 
 
 _TRUNCATED_JSON_STR_RE: Final[re.Pattern[str]] = re.compile(
@@ -253,20 +294,6 @@ def _diff_line_style(line: str, *, plain: bool) -> str:
     return "diff.context"
 
 
-def _append_approval_keys(body: Text, *, grantable: bool, folder: bool = False) -> None:
-    """Append the yes/no key legend with No as the visual default."""
-    if folder:
-        body.append("[y] yes for this folder this session", style="approval.keys")
-        body.append("  ", style="approval.keys")
-        body.append("[N] no", style="approval.default")
-        return
-    body.append("[y] yes", style="approval.keys")
-    if grantable:
-        body.append("  [a] yes for this file this session", style="approval.keys")
-    body.append("  ", style="approval.keys")
-    body.append("[N] no", style="approval.default")
-
-
 class ChatRenderer:
     """Renders session headers, history, approvals, and errors to a Rich `Console`."""
 
@@ -298,17 +325,13 @@ class ChatRenderer:
         display_home: str,
         display_workspace: str | None = None,
     ) -> None:
-        """Render the welcome panel or session header panel."""
+        """Render the everyday welcome card (borderless, no panel chrome)."""
+        from aldwin.cli.brand import TAGLINE
+
         width = _panel_width(self.console)
         if first_run:
-            panel = Panel(
-                Text("A personal assistant that runs on your computer.", style="fg"),
-                title="[accent]Welcome to Aldwin[/accent]",
-                title_align="left",
-                border_style="border",
-                width=width,
-                padding=(0, 1),
-            )
+            title = Text("Welcome to Aldwin", style="accent")
+            body = Text(TAGLINE, style="fg")
         else:
             raw_loc = (
                 f"workspace: {display_workspace}" if display_workspace else display_home
@@ -317,15 +340,12 @@ class ChatRenderer:
             shown_loc = (
                 raw_loc if len(raw_loc) <= max_loc else f"…{raw_loc[-(max_loc - 1) :]}"
             )
-            panel = Panel(
-                Text(TIPS_LINE, style="muted"),
-                title=f"[accent]Aldwin[/accent] · {model} · {shown_loc}",
-                title_align="left",
-                border_style="border",
-                width=width,
-                padding=(0, 1),
-            )
-        self.console.print(panel)
+            title = Text()
+            title.append("Aldwin", style="accent")
+            title.append(f" · {model} · {shown_loc}", style="muted")
+            body = Text(TIPS_LINE, style="muted")
+        self.console.print(title)
+        self.console.print(body)
 
     def render_history(
         self,
@@ -333,24 +353,47 @@ class ChatRenderer:
         *,
         updated_at: str | None = None,
         now: datetime | None = None,
+        show_messages: bool = False,
+        max_messages: int | None = None,
     ) -> None:
-        """Render recent messages dimmed, divider, and interrupted notice."""
-        if event.messages:
-            last_at = updated_at
-            for item in event.messages:
-                if item.at:
-                    last_at = item.at
-                if item.role == "user":
-                    self.console.print(Text(f"› {item.text}", style="muted"))
-                else:
-                    self.console.print(Text(f"  {item.text}", style="muted"))
+        """Render resume chrome and optionally the transcript.
 
+        On open, call with ``show_messages=False`` (welcome + muted
+        ``continuing from …`` only). ``/history`` uses ``show_messages=True``.
+        """
+        last_at = updated_at
+        for item in event.messages:
+            if item.at:
+                last_at = item.at
+
+        if show_messages and event.messages:
+            shown = (
+                event.messages
+                if max_messages is None
+                else event.messages[-max_messages:]
+            )
+            for item in shown:
+                text = item.text
+                if item.role == "user":
+                    marker = "> " if self.plain else "❯ "
+                    self.console.print(Text(f"{marker}{text}", style="muted"))
+                else:
+                    marker = "* " if self.plain else "● "
+                    self.console.print(Text(f"{marker}{text}", style="muted"))
+            self.console.print()
+
+        if event.messages:
             when = format_relative_time(last_at, now=now)
-            if self.plain:
-                self.console.print(f"──── continuing from {when} ────")
+            if show_messages:
+                self.console.print(
+                    Text(f"{len(event.messages)} messages · from {when}", style="muted")
+                )
             else:
                 self.console.print(
-                    Rule(f"continuing from {when}", style="muted", characters="─")
+                    Text(
+                        f"continuing from {when} · /history to review",
+                        style="muted",
+                    )
                 )
 
         if event.interrupted:
@@ -369,11 +412,21 @@ class ChatRenderer:
         else:
             self.console.print(Rule("new conversation", style="muted", characters="─"))
 
+    def render_turn_separator(self) -> None:
+        """Horizontal rule after a finished Q&A so the next prompt is easy to spot."""
+        self.console.print()
+        if self.plain:
+            width = max(12, min(48, self.console.width))
+            self.console.print("─" * width)
+        else:
+            self.console.print(Rule(style="border", characters="─"))
+
     def build_approval_panel(
         self,
         event: ApprovalEvent,
         *,
         expanded: bool = False,
+        selected: int = 0,
     ) -> Panel:
         """Construct the approval `Panel` (muted border; yellow only for risk)."""
         clean_summary = sanitize_display_text(event.summary.strip())
@@ -450,38 +503,68 @@ class ChatRenderer:
                     )
                 )
 
-            keys = Text()
-            _append_approval_keys(keys, grantable=event.grantable)
-            diff_parts.append(Text(""))
-            diff_parts.append(keys)
-            body_renderable: RenderableType = Group(*diff_parts)
+            body_parts = list(diff_parts)
+            body_parts.append(Text(""))
+            body_parts.append(self._approval_chooser_options(event, selected=selected))
+            body_renderable = Group(*body_parts)
         else:
-            body = Text()
+            parts: list[RenderableType] = []
             if risky_labels:
-                body.append(f"⚠ {' · '.join(risky_labels)}\n", style="warn")
-            is_multiline = "\n" in detail_text or bool(risky_labels)
+                parts.append(Text(f"⚠ {' · '.join(risky_labels)}", style="warn"))
             detail_style = (
                 "" if self.plain else ("fg" if "\n" in detail_text else "code")
             )
-            body.append(detail_text, style=detail_style)
-            if event.grantable:
-                body.append("\n\n" if is_multiline else "  ")
-                _append_approval_keys(body, grantable=True, folder=True)
-            else:
-                body.append("\n\n" if is_multiline else "  ")
-                _append_approval_keys(body, grantable=False)
-            body_renderable = body
+            parts.append(Text(detail_text, style=detail_style))
+            parts.append(Text(""))
+            parts.append(self._approval_chooser_options(event, selected=selected))
+            body_renderable = Group(*parts)
 
         # Yellow border only when something is labelled risky; Diff is quiet grey.
         border = "warn" if risky_labels else "border"
+        title = clean_summary or "Approve action?"
         return Panel(
             body_renderable,
-            title=clean_summary or "Approve action?",
+            title=title,
             title_align="left",
+            subtitle="Do you want to proceed?",
+            subtitle_align="left",
             border_style="" if self.plain else border,
             width=panel_width,
             padding=(0, 1),
         )
+
+    def _approval_chooser_options(
+        self,
+        event: ApprovalEvent,
+        *,
+        selected: int = 0,
+    ) -> Text:
+        """❯ list with No as default. ``selected`` is 0=No, 1=Yes, 2=session."""
+        options: list[tuple[ApprovalAnswer, str]] = [
+            ("no", "No"),
+            ("yes", "Yes"),
+        ]
+        if event.grantable:
+            if event.grant_scope == "folder":
+                options.append(("yes_session", "Yes, for this folder this session"))
+            else:
+                options.append(("yes_session", "Yes, for this session"))
+
+        n = len(options)
+        sel = selected % n if n else 0
+        block = Text()
+        for idx, (_answer, label) in enumerate(options):
+            marker = "❯ " if idx == sel else "  "
+            style = "accent" if idx == sel else "muted"
+            if self.plain:
+                marker = "> " if idx == sel else "  "
+                style = ""
+            block.append(f"{marker}{label}\n", style=style)
+        block.append(
+            "↑↓ move · enter confirm · y/n/a shortcuts",
+            style="muted",
+        )
+        return block
 
     def ring_bell(self) -> None:
         """Emit the terminal bell character (`\\a`) when not in plain mode."""
@@ -500,7 +583,9 @@ class ChatRenderer:
     ) -> None:
         """Print the bordered approval panel and ring the terminal bell."""
         self.ring_bell()
-        self.console.print(self.build_approval_panel(event, expanded=expanded))
+        self.console.print(
+            self.build_approval_panel(event, expanded=expanded, selected=0)
+        )
 
     def render_error(self, code: ErrorCode, message: str = "") -> None:
         """Render a protocol `ErrorEvent` as one actionable line."""
@@ -541,7 +626,12 @@ class TurnRenderer:
         self._clock = clock
 
         self._started_at: float = self._clock()
-        self._spinner_text: str = "Thinking…"
+        self._last_activity_at: float = self._started_at
+        self._spinner_mode: Literal[
+            "requesting", "responding", "tool_use", "waiting"
+        ] = "requesting"
+        self._active_tool_name: str = ""
+        self._token_estimate: int = 0
         self._tool_count: int = 0
         self._pending_tools: dict[str, tuple[str, str, str]] = {}
         self._printed_pending_ids: set[str] = set()
@@ -550,7 +640,11 @@ class TurnRenderer:
         self._last_printed_kind: Literal["none", "tool", "text"] = "none"
         self._live: Live | None = None
         self._approval_live: Live | None = None
-        self._ticker_task: asyncio.Task[None] | None = None
+        self._approval_event: ApprovalEvent | None = None
+        self._approval_selected: int = 0
+        self._approval_expanded: bool = False
+        self._reduced_motion: bool = reduced_motion_preferred()
+        self._sync_output: bool = sync_output_enabled(plain=self.plain)
 
     @property
     def tool_count(self) -> int:
@@ -561,11 +655,79 @@ class TurnRenderer:
         """Return elapsed seconds since the turn started."""
         return max(0.0, self._clock() - self._started_at)
 
+    def _note_activity(self) -> None:
+        """Reset stall timer after text / tool / status activity."""
+        self._last_activity_at = self._clock()
+
+    @property
+    def _spinner_text(self) -> str:
+        """Status verb derived from the current spinner mode."""
+        if self._spinner_mode == "responding":
+            return "Writing…"
+        if self._spinner_mode == "waiting":
+            return "Waiting for you…"
+        if self._spinner_mode == "tool_use":
+            label = human_tool_label(self._active_tool_name or "tool")
+            return f"Running {label}…"
+        return "Thinking…"
+
     def format_status_line(self) -> str:
-        """Format the live status text (`working · 12s · 3 tools`)."""
-        elapsed = format_elapsed_s(self.elapsed_seconds())
-        tools = _tool_word(self._tool_count)
-        return f"working · {elapsed} · {tools}"
+        """Muted trailing status after 3 s: `(Ns · ↓ N tokens · esc to interrupt)`."""
+        elapsed = self.elapsed_seconds()
+        if elapsed < 3.0:
+            return ""
+        tokens = format_tokens(self._token_estimate) if self._token_estimate else "…"
+        return f"({format_elapsed_s(elapsed)} · ↓ {tokens} tokens · esc to interrupt)"
+
+    def _stall_rgb(self) -> tuple[int, int, int]:
+        silence = max(0.0, self._clock() - self._last_activity_at)
+        if silence < STALL_START_S:
+            return ACCENT_RGB
+        if silence >= STALL_FULL_S:
+            return STALL_RED_RGB
+        t = (silence - STALL_START_S) / (STALL_FULL_S - STALL_START_S)
+        return interpolate_rgb(ACCENT_RGB, STALL_RED_RGB, t)
+
+    def spinner_glyph(self, *, now: float | None = None) -> str:
+        """Return the current spinner glyph for ``now`` (injectable for tests)."""
+        if self.plain:
+            return "[.]"
+        if self._reduced_motion:
+            return "●"
+        at = now if now is not None else self._clock()
+        elapsed = max(0.0, at - self._started_at)
+        frame_i = int(elapsed / GLYPH_FRAME_S) % len(SPINNER_FRAMES)
+        return SPINNER_FRAMES[frame_i]
+
+    def _build_spinner_line(self) -> Text:
+        """Glyph + shimmer verb + optional elapsed trailer for the Live footer."""
+        elapsed = self.elapsed_seconds()
+        stall = self._stall_rgb()
+        stall_style = rgb_style(*stall)
+        shimmer_on = int(elapsed / 0.25) % 2 == 0
+        verb_style = (
+            stall_style
+            if stall != ACCENT_RGB
+            else (
+                rgb_style(*ACCENT_BRIGHT_RGB) if shimmer_on else rgb_style(*ACCENT_RGB)
+            )
+        )
+
+        if self._reduced_motion:
+            glyph = "●"
+            breathe = int(elapsed / 2.0) % 2 == 0
+            glyph_style = verb_style if breathe else "muted"
+        else:
+            glyph = self.spinner_glyph()
+            glyph_style = stall_style
+
+        line = Text()
+        line.append(f"{glyph} ", style=glyph_style)
+        line.append(self._spinner_text, style=verb_style)
+        trailer = self.format_status_line()
+        if trailer:
+            line.append(f"  {trailer}", style="muted")
+        return line
 
     def _build_pending_tool_line(
         self,
@@ -577,8 +739,9 @@ class TurnRenderer:
             card = Text("  ● ", style="muted", no_wrap=True, overflow="ellipsis")
             card.append(summary, style="muted")
             return card
-        card = Text("  ⚙ ", style="muted", no_wrap=True, overflow="ellipsis")
-        card.append(name, style="muted")
+        card = Text("  ● ", style="muted", no_wrap=True, overflow="ellipsis")
+        label = human_tool_label(name)
+        card.append(label, style="muted")
         if display_args:
             card.append(f"  {display_args}", style="muted")
         return card
@@ -595,49 +758,44 @@ class TurnRenderer:
         if self._markdown_buffer.strip():
             parts.append(Markdown(self._markdown_buffer))
 
-        status_str = f"{self._spinner_text}  ·  {self.format_status_line()}"
-        parts.append(
-            Spinner(
-                "dots",
-                text=Text(status_str, style="muted"),
-                style="accent",
-            )
-        )
+        parts.append(self._build_spinner_line())
         return Group(*parts)
 
     def start(self) -> None:
-        """Start the transient `Live` display and `0.5 s` refresh ticker."""
+        """Start the transient `Live` display at ~12 Hz (auto_refresh)."""
+        # Blank line between the user's question and Aldwin's reply / spinner.
+        self.console.print()
         self._started_at = self._clock()
+        self._last_activity_at = self._started_at
+        self._spinner_mode = "requesting"
+        self._active_tool_name = ""
         self._ensure_live()
-
-    async def _run_ticker(self) -> None:
-        """Refresh the live status line every 0.5 s while the turn is active."""
-        try:
-            while True:
-                await asyncio.sleep(0.5)
-                self._refresh_live()
-        except asyncio.CancelledError:
-            raise
-
-    def _stop_ticker(self) -> None:
-        if self._ticker_task is not None and not self._ticker_task.done():
-            self._ticker_task.cancel()
-        self._ticker_task = None
 
     def _stop_approval_live(self) -> None:
         if self._approval_live is not None:
             self._approval_live.stop()
             self._approval_live = None
 
+    def _end_sync_output(self) -> None:
+        if not self._sync_output:
+            return
+        try:
+            self.console.file.write(CSI_SYNC_END)
+            self.console.file.flush()
+        except OSError:
+            pass
+
     def _stop_live(self) -> None:
-        self._stop_ticker()
         self._stop_approval_live()
         if self._live is not None:
-            self._live.stop()
+            try:
+                self._live.stop()
+            finally:
+                self._end_sync_output()
             self._live = None
 
     def close(self) -> None:
-        """Ensure turn and checklist Live regions and the ticker are stopped."""
+        """Ensure turn and checklist Live regions are stopped; clear DEC 2026."""
         self._stop_live()
         self._chat.todo_view.freeze()
 
@@ -657,22 +815,32 @@ class TurnRenderer:
                 console=self.console,
                 refresh_per_second=12,
                 transient=True,
-                auto_refresh=False,
+                auto_refresh=True,
             )
             self._live.start(refresh=True)
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None and (self._ticker_task is None or self._ticker_task.done()):
-            self._ticker_task = loop.create_task(self._run_ticker())
 
     def _refresh_live(self) -> None:
+        """Mark the Live region dirty; auto_refresh paints at 12 Hz.
+
+        Explicit refresh is reserved for approval / resume edges. Text deltas
+        only call ``_note_activity`` so streaming stays within the write budget.
+        """
         if self._chat.todo_view.live_active:
             return
         self._ensure_live()
-        if self._live is not None and self._live.is_started:
+        if self._live is None or not self._live.is_started:
+            return
+        if not self._sync_output:
+            return
+        try:
+            self.console.file.write(CSI_SYNC_START)
+            self.console.file.flush()
+        except OSError:
+            pass
+        try:
             self._live.refresh()
+        finally:
+            self._end_sync_output()
 
     def _print_markdown_block(self, block: str) -> None:
         cleaned = block.strip()
@@ -680,10 +848,24 @@ class TurnRenderer:
             return
         if self._last_printed_kind in ("tool", "text"):
             self.console.print()
+        lead = not self._has_printed_text
         if self.plain:
-            self.console.print(cleaned)
+            for i, line in enumerate(cleaned.splitlines() or [""]):
+                if lead and i == 0:
+                    prefix = "* "
+                else:
+                    prefix = "  "
+                self.console.print(f"{prefix}{line}")
         else:
-            self.console.print(Markdown(cleaned))
+            try:
+                from aldwin.cli.markdown import render_markdown
+
+                renderable = render_markdown(cleaned, plain=False)
+            except ImportError:
+                renderable = Markdown(cleaned)
+            if lead:
+                self.console.print(Text("● ", style="accent"), end="")
+            self.console.print(renderable)
         self._has_printed_text = True
         self._last_printed_kind = "text"
 
@@ -701,27 +883,30 @@ class TurnRenderer:
         """Append a `text` delta and flush finished markdown blocks."""
         if not delta:
             return
+        self._spinner_mode = "responding"
+        self._note_activity()
+        self._token_estimate += max(1, len(delta) // 4)
         self._markdown_buffer += delta
         completed, remainder = split_markdown_blocks(self._markdown_buffer)
         self._markdown_buffer = remainder
         for block in completed:
             self._print_markdown_block(block)
-        self._refresh_live()
+        # auto_refresh paints; do not call refresh() on every delta.
 
     def on_tool_call(self, event: ToolCallEvent) -> None:
-        """Flush buffered text, track pending `⚙` card, and update spinner."""
+        """Flush buffered text, track pending `●` card, and update spinner."""
         self._flush_markdown_buffer()
+        self._note_activity()
+        self._spinner_mode = "tool_use"
+        self._active_tool_name = event.name
         if event.name == "todo":
             # Checklist UI comes from todo.updated, not a collapsed tool row.
             self._pending_tools[event.call_id] = (event.name, "", "")
-            self._spinner_text = "Updating tasks…"
-            self._refresh_live()
             return
 
         display_args = format_display_args(event.args_preview, tool_name=event.name)
         summary = sanitize_display_text(event.summary.strip())
         self._pending_tools[event.call_id] = (event.name, display_args, summary)
-        self._spinner_text = f"Running {event.name}…"
 
         if self.plain or not self.console.is_interactive:
             self._printed_pending_ids.add(event.call_id)
@@ -732,8 +917,6 @@ class TurnRenderer:
             )
             self._last_printed_kind = "tool"
 
-        self._refresh_live()
-
     def on_tool_result(self, event: ToolResultEvent) -> None:
         """Print a single-line `✓` or `✗` tool card with args, duration, and summary."""
         tool_name, display_args, _pending_summary = self._pending_tools.pop(
@@ -742,71 +925,100 @@ class TurnRenderer:
         )
         was_printed_pending = event.call_id in self._printed_pending_ids
         self._printed_pending_ids.discard(event.call_id)
+        self._note_activity()
 
         self._tool_count += 1
         if self._pending_tools:
             next_tool, _next_args, _next_summary = next(
                 iter(self._pending_tools.values())
             )
-            self._spinner_text = f"Running {next_tool}…"
+            self._spinner_mode = "tool_use"
+            self._active_tool_name = next_tool
         else:
-            self._spinner_text = "Thinking…"
+            self._spinner_mode = "requesting"
+            self._active_tool_name = ""
 
         if tool_name == "todo":
             # Checklist UI is driven by `todo.updated`, not this row.
-            self._refresh_live()
             return
 
-        duration = format_duration_ms(event.duration_ms)
+        duration_ms = event.duration_ms
         summary = sanitize_display_text(clean_tool_summary(tool_name, event.summary))
+        label = human_tool_label(tool_name)
         include_args = bool(display_args) and not was_printed_pending
+        # Hide sub-1s noise (`0.0s`) from the permanent row.
+        show_duration = duration_ms >= 1000
+        duration = format_duration_ms(duration_ms) if show_duration else ""
 
         if event.ok:
-            detail = f"{duration} · {summary}" if summary else duration
+            if summary and duration:
+                detail = f"{duration} · {summary}"
+            else:
+                detail = summary or duration
             card = Text("  ✓ ", style="ok", no_wrap=True, overflow="ellipsis")
-            card.append(tool_name, style="muted")
+            card.append(label, style="muted")
             if include_args:
                 avail = max(
                     12,
-                    self.console.width - len("  ✓ ") - len(tool_name) - len(detail) - 4,
+                    self.console.width - len("  ✓ ") - len(label) - len(detail) - 4,
                 )
                 capped_args = _cap_text_width(display_args, avail)
                 card.append(f"  {capped_args}", style="muted")
-            card.append(f"  {detail}", style="muted")
+            if detail:
+                card.append(f"  {detail}", style="muted")
+            self.console.print(card, overflow="ellipsis", no_wrap=True)
         else:
             reason = summary or "failed"
+            # Fail row: glyph + label, then ⎿ reason.
             card = Text("  ✗ ", style="err", no_wrap=True, overflow="ellipsis")
-            card.append(tool_name, style="err")
+            card.append(label, style="err")
             if include_args:
                 avail = max(
                     12,
-                    self.console.width - len("  ✗ ") - len(tool_name) - len(reason) - 4,
+                    self.console.width - len("  ✗ ") - len(label) - 4,
                 )
                 capped_args = _cap_text_width(display_args, avail)
                 card.append(f"  {capped_args}", style="muted")
-            card.append(f"  {reason}", style="err")
+            self.console.print(card, overflow="ellipsis", no_wrap=True)
+            fail_mark = "  | " if self.plain else "  ⎿ "
+            self.console.print(
+                Text(
+                    f"{fail_mark}{reason}",
+                    style="err",
+                    no_wrap=True,
+                    overflow="ellipsis",
+                ),
+                overflow="ellipsis",
+                no_wrap=True,
+            )
+            self._last_printed_kind = "tool"
+            return
 
-        self.console.print(card, overflow="ellipsis", no_wrap=True)
-        if self._chat.verbose and event.ok and event.preview.strip():
+        if self._chat.verbose and event.preview.strip():
             shown = sanitize_display_text(event.preview)
             for line in shown.splitlines()[:12]:
                 self.console.print(Text(f"    {line}", style="muted"))
         self._last_printed_kind = "tool"
-        self._refresh_live()
 
     def on_status(self, message: str) -> None:
         """Render a non-terminal status event."""
+        self._note_activity()
         self._chat.render_status_notice(message)
-        self._refresh_live()
 
     def pause_for_approval(self, event: ApprovalEvent) -> None:
         """Stop turn `Live` and show the transient approval box."""
         self._flush_markdown_buffer()
         self._chat.todo_view.freeze()
+        self._spinner_mode = "waiting"
         self._stop_live()
+        self._approval_event = event
+        self._approval_selected = 0
+        self._approval_expanded = False
         if not self.plain and self.console.is_interactive:
             self._chat.ring_bell()
-            panel = self._chat.build_approval_panel(event)
+            panel = self._chat.build_approval_panel(
+                event, selected=self._approval_selected
+            )
             self._approval_live = Live(
                 panel,
                 console=self.console,
@@ -819,14 +1031,67 @@ class TurnRenderer:
 
     def expand_approval_panel(self, event: ApprovalEvent) -> None:
         """Expand a folded 24-line diff panel in place on `Ctrl+O`."""
-        panel = self._chat.build_approval_panel(event, expanded=True)
+        self._approval_expanded = True
+        panel = self._chat.build_approval_panel(
+            event,
+            expanded=True,
+            selected=getattr(self, "_approval_selected", 0),
+        )
         if self._approval_live is not None:
             self._approval_live.update(panel, refresh=True)
         else:
             self.console.print(panel)
 
-    def resolve_approval(self, event: ApprovalEvent, answer: ApprovalAnswer) -> None:
-        """Collapse the approval box into a one-line `✓ approved` / `✗ declined` row."""
+    def approval_option_count(self) -> int:
+        """Return how many chooser rows the current approval panel shows."""
+        event = self._approval_event
+        if event is None:
+            return 2
+        return 3 if event.grantable else 2
+
+    def set_approval_selection(self, selected: int) -> None:
+        """Move the ❯ highlight in the live approval chooser."""
+        event = self._approval_event
+        if event is None:
+            return
+        n = self.approval_option_count()
+        self._approval_selected = selected % n if n else 0
+        panel = self._chat.build_approval_panel(
+            event,
+            expanded=self._approval_expanded,
+            selected=self._approval_selected,
+        )
+        if self._approval_live is not None:
+            self._approval_live.update(panel, refresh=True)
+
+    @property
+    def approval_selected(self) -> int:
+        """Current chooser index (0=No, 1=Yes, 2=session when grantable)."""
+        return self._approval_selected
+
+    @property
+    def has_printed_text(self) -> bool:
+        """True once any assistant text was flushed this turn."""
+        return self._has_printed_text
+
+    @property
+    def has_assistant_output(self) -> bool:
+        """True if any assistant text was received (flushed or still buffered)."""
+        return self._has_printed_text or bool(self._markdown_buffer.strip())
+
+    def collapse_approval_panel(self) -> None:
+        """Hide the approval Live without restarting the turn spinner."""
+        self._stop_approval_live()
+
+    def resolve_approval(
+        self,
+        event: ApprovalEvent,
+        answer: ApprovalAnswer,
+        *,
+        reason: str | None = None,
+        resume: bool = True,
+    ) -> None:
+        """Collapse the approval box into one result row; optionally resume Live."""
         self._stop_approval_live()
         target = sanitize_display_text(_approval_record_target(event))
         if answer == "yes":
@@ -840,11 +1105,15 @@ class TurnRenderer:
             )
         else:
             line = Text("  ✗ declined", style="warn", no_wrap=True, overflow="ellipsis")
+            if reason:
+                clean_reason = sanitize_display_text(reason)
+                line.append(f" (you said: {clean_reason})", style="muted")
         if target:
             line.append(f"  {target}", style="muted")
         self.console.print(line, overflow="ellipsis", no_wrap=True)
         self._last_printed_kind = "tool"
-        self.resume_after_approval()
+        if resume:
+            self.resume_after_approval()
 
     def resume_after_approval(self) -> None:
         """Restart `Live` after the user answers the approval prompt."""
@@ -864,10 +1133,16 @@ class TurnRenderer:
         )
 
         if event.reason == "stopped":
-            self._flush_markdown_buffer(suffix="*(stopped)*")
-            end_line = Text("  ✓ ", style="ok")
-            end_line.append(f"done · {elapsed} · {tools} (stopped)", style="muted")
-            self.console.print(end_line)
+            self._flush_markdown_buffer()
+            # Muted interrupt trail; tell the user what to do next.
+            mark = "  | " if self.plain else "  ⎿ "
+            self.console.print(
+                Text(
+                    f"{mark}Interrupted · tell Aldwin what to do instead",
+                    style="muted",
+                )
+            )
+            self._chat.render_turn_separator()
             return total_tokens
 
         self._flush_markdown_buffer()
@@ -880,14 +1155,22 @@ class TurnRenderer:
                 notice.append("continue", style="italic")
                 notice.append(" to keep going.")
                 self.console.print(notice)
+            self._chat.render_turn_separator()
             return total_tokens
 
-        end_line = Text("  ✓ ", style="ok")
-        summary = f"done · {elapsed} · {tools}"
+        # End-of-turn summary: ✻ Worked for …
+        glyph = "*" if self.plain else "✻"
+        end_line = Text(f"  {glyph} ", style="accent")
+        summary = f"Worked for {elapsed}"
+        if self._tool_count:
+            summary += f" · {tools}"
         if event.usage is not None:
             summary += f" · {format_tokens(total_tokens)} tokens"
         end_line.append(summary, style="muted")
         self.console.print(end_line)
+        if not self.plain and self.elapsed_seconds() >= 30.0:
+            self._chat.ring_bell()
+        self._chat.render_turn_separator()
         return total_tokens
 
     def finish_error(self, event: ErrorEvent) -> None:
@@ -896,3 +1179,4 @@ class TurnRenderer:
         self._stop_live()
         self._chat.todo_view.freeze()
         self._chat.render_error(event.code, event.message)
+        self._chat.render_turn_separator()

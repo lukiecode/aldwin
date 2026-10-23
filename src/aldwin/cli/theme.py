@@ -2,28 +2,67 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import IO, Final
+from typing import IO, Final, Literal
 
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.theme import Theme
 
-THEME: Final[Theme] = Theme(
-    {
+# Lunar teal: Aldwin's own accent (cool local assistant, not Claude orange).
+# TrueColor for Rich + #hex for prompt_toolkit.
+ACCENT_RGB: Final[tuple[int, int, int]] = (56, 189, 176)
+ACCENT_BRIGHT_RGB: Final[tuple[int, int, int]] = (122, 224, 214)
+ACCENT_SHADOW_RGB: Final[tuple[int, int, int]] = (32, 120, 112)
+STALL_RED_RGB: Final[tuple[int, int, int]] = (196, 74, 98)
+USER_MSG_BG: Final[str] = "grey15"
+ACCENT_HEX: Final[str] = "#38bdb0"
+
+SPINNER_GLYPHS: Final[tuple[str, ...]] = ("·", "✢", "✱", "✶", "✻", "✽")
+# Forward then reverse without duplicating endpoints.
+SPINNER_FRAMES: Final[tuple[str, ...]] = (
+    *SPINNER_GLYPHS,
+    *tuple(reversed(SPINNER_GLYPHS[1:-1])),
+)
+GLYPH_FRAME_S: Final[float] = 1.0 / 12.0
+
+ThemeChoice = Literal["auto", "dark", "light", "colour_blind", "plain"]
+
+_ACCENT_STYLE: Final[str] = f"rgb({ACCENT_RGB[0]},{ACCENT_RGB[1]},{ACCENT_RGB[2]})"
+_ACCENT_BRIGHT_STYLE: Final[str] = (
+    f"rgb({ACCENT_BRIGHT_RGB[0]},{ACCENT_BRIGHT_RGB[1]},{ACCENT_BRIGHT_RGB[2]})"
+)
+_ACCENT_SHADOW_STYLE: Final[str] = (
+    f"rgb({ACCENT_SHADOW_RGB[0]},{ACCENT_SHADOW_RGB[1]},{ACCENT_SHADOW_RGB[2]})"
+)
+
+
+def _base_theme_styles(
+    *,
+    accent: str,
+    accent_bright: str,
+    ok: str = "green",
+    err: str = "red",
+    warn: str = "yellow",
+) -> dict[str, str]:
+    return {
         "fg": "default",
-        "accent": "cyan",
-        "code": "cyan",
+        "accent": accent,
+        "accent.bright": accent_bright,
+        "accent.shadow": _ACCENT_SHADOW_STYLE,
+        "user_msg.bg": USER_MSG_BG,
+        "code": accent,
         "muted": "bright_black",
         "border": "bright_black",
-        "ok": "green",
-        "warn": "yellow",
-        "err": "red",
-        "diff.plus": "green",
-        "diff.minus": "red",
-        "diff.meta": "cyan",
+        "ok": ok,
+        "warn": warn,
+        "err": err,
+        "diff.plus": ok,
+        "diff.minus": err,
+        "diff.meta": accent,
         "diff.context": "default",
         "approval.keys": "bright_black",
         "approval.default": "bold",
@@ -32,37 +71,63 @@ THEME: Final[Theme] = Theme(
         "markdown.em": "italic",
         "markdown.emph": "italic",
         "markdown.strong": "bold",
-        "markdown.code": "cyan",
-        "markdown.code_block": "cyan",
+        "markdown.code": accent,
+        "markdown.code_block": accent,
         "markdown.block_quote": "bright_black",
         "markdown.list": "default",
         "markdown.item": "default",
         "markdown.item.bullet": "bright_black",
         "markdown.item.number": "bright_black",
         "markdown.hr": "bright_black",
-        "markdown.h1": "bold underline",
+        "markdown.h1": f"bold {accent}",
         "markdown.h2": "bold",
-        "markdown.h3": "bold",
+        "markdown.h3": "bold bright_black",
         "markdown.h4": "bold bright_black",
         "markdown.h5": "italic",
         "markdown.h6": "bright_black",
-        "markdown.link": "cyan",
-        "markdown.link_url": "cyan underline",
+        "markdown.link": accent,
+        "markdown.link_url": f"{accent} underline",
+    }
+
+
+THEME: Final[Theme] = Theme(
+    _base_theme_styles(accent=_ACCENT_STYLE, accent_bright=_ACCENT_BRIGHT_STYLE)
+)
+
+# Colour-blind: blue / orange instead of green / red for status meaning.
+THEME_COLOUR_BLIND: Final[Theme] = Theme(
+    _base_theme_styles(
+        accent=_ACCENT_STYLE,
+        accent_bright=_ACCENT_BRIGHT_STYLE,
+        ok="bright_blue",
+        err="dark_orange",
+        warn="yellow",
+    )
+)
+
+# Light terminal: keep accent; slightly stronger muted for contrast on light bg.
+THEME_LIGHT: Final[Theme] = Theme(
+    {
+        **_base_theme_styles(accent=_ACCENT_STYLE, accent_bright=_ACCENT_BRIGHT_STYLE),
+        "muted": "grey42",
+        "border": "grey50",
+        "user_msg.bg": "grey93",
+        "markdown.code_block": _ACCENT_STYLE,
     }
 )
 
 PROMPT_STYLE: Final[Style] = Style.from_dict(
     {
         "": "ansibrightblack",
-        "prompt": "ansicyan bold",
-        "skill-token": "ansicyan bold",
+        "prompt": f"{ACCENT_HEX} bold",
         "bottom-toolbar": "noreverse ansibrightblack",
         "bottom-toolbar.text": "noreverse ansibrightblack",
-        "completion-menu": "bg:ansiblack ansiwhite",
-        "completion-menu.completion": "bg:ansiblack ansiwhite",
-        "completion-menu.completion.current": "bg:ansicyan ansiblack bold",
-        "completion-menu.meta.completion": "bg:ansiblack ansibrightblack",
-        "completion-menu.meta.completion.current": "bg:ansicyan ansiblack",
+        "completion-menu": "bg:default ansiwhite",
+        "completion-menu.completion": "bg:default ansiwhite",
+        "completion-menu.completion.current": f"{ACCENT_HEX} bold",
+        "completion-menu.meta.completion": "bg:default ansibrightblack",
+        "completion-menu.meta.completion.current": f"{ACCENT_HEX}",
+        "ghost": f"{ACCENT_HEX} italic",
     }
 )
 
@@ -72,6 +137,7 @@ PLAIN_PROMPT_STYLE: Final[Style] = Style.from_dict(
         "prompt": "",
         "bottom-toolbar": "noreverse",
         "bottom-toolbar.text": "noreverse",
+        "ghost": "italic",
     }
 )
 
@@ -82,6 +148,102 @@ _SNAPSHOT_SUFFIXES: Final[tuple[str, ...]] = (
     "-codex-max",
     "-codex-mini",
 )
+
+
+def rgb_style(r: int, g: int, b: int) -> str:
+    """Return a Rich style string for an RGB colour."""
+    return f"rgb({int(r)},{int(g)},{int(b)})"
+
+
+def interpolate_rgb(
+    a: tuple[int, int, int],
+    b: tuple[int, int, int],
+    t: float,
+) -> tuple[int, int, int]:
+    """Linearly interpolate between RGB tuples; `t` clamped to ``0..1``."""
+    clamped = max(0.0, min(1.0, float(t)))
+    return (
+        int(round(a[0] + (b[0] - a[0]) * clamped)),
+        int(round(a[1] + (b[1] - a[1]) * clamped)),
+        int(round(a[2] + (b[2] - a[2]) * clamped)),
+    )
+
+
+def resolve_theme_choice(name: str | None, *, plain: bool = False) -> ThemeChoice:
+    """Map config / CLI flags to a concrete theme choice."""
+    if plain or os.environ.get("NO_COLOR", "").strip():
+        return "plain"
+    cleaned = (name or "dark").strip().lower().replace("-", "_")
+    if cleaned in {"default", "auto"}:
+        return "auto"
+    if cleaned in {"dark", "light", "colour_blind", "color_blind", "plain"}:
+        if cleaned == "color_blind":
+            return "colour_blind"
+        return cleaned  # type: ignore[return-value]
+    return "dark"
+
+
+def rich_theme_for(choice: ThemeChoice) -> Theme:
+    """Return the Rich ``Theme`` for a resolved choice (auto → dark for now)."""
+    if choice == "plain":
+        return THEME
+    if choice == "light":
+        return THEME_LIGHT
+    if choice == "colour_blind":
+        return THEME_COLOUR_BLIND
+    # auto: prefer dark until OSC 11 background query lands with onboarding.
+    return THEME
+
+
+def context_bar(pct: int, *, plain: bool = False, width: int = 10) -> str:
+    """Return a ``width``-char filled bar for remaining context percent."""
+    bar_width = max(1, int(width))
+    clamped = max(0, min(100, int(pct)))
+    filled = int(round(clamped / 100.0 * bar_width))
+    filled = max(0, min(bar_width, filled))
+    if plain:
+        return ("#" * filled) + ("-" * (bar_width - filled))
+    return ("█" * filled) + ("░" * (bar_width - filled))
+
+
+def reduced_motion_preferred() -> bool:
+    """Return True when ``ALDWIN_REDUCED_MOTION=1`` asks for static chrome."""
+    return os.environ.get("ALDWIN_REDUCED_MOTION", "").strip() == "1"
+
+
+def sync_output_enabled(*, plain: bool) -> bool:
+    """Return True when DEC 2026 sync brackets may wrap Live refreshes."""
+    if plain:
+        return False
+    if os.environ.get("ALDWIN_NO_SYNC_OUTPUT", "").strip() == "1":
+        return False
+    if os.environ.get("TERM_PROGRAM", "").strip() == "Apple_Terminal":
+        return False
+    return True
+
+
+def should_show_wordmark_splash(*, plain: bool, width: int) -> bool:
+    """Return True when the ALDWIN wordmark splash may play this launch."""
+    return not plain and not reduced_motion_preferred() and width >= 80
+
+
+def set_terminal_title(
+    file: IO[str] | None, title: str, *, plain: bool = False
+) -> None:
+    """Set the terminal window/tab title via OSC 0 (no-op when plain)."""
+    if plain or file is None:
+        return
+    clean = title.replace("\x1b", "").replace("\x07", "")[:80]
+    try:
+        file.write(f"\x1b]0;{clean}\x07")
+        file.flush()
+    except OSError:
+        pass
+
+
+def clear_terminal_title(file: IO[str] | None, *, plain: bool = False) -> None:
+    """Restore a neutral terminal title after a working turn."""
+    set_terminal_title(file, "Aldwin", plain=plain)
 
 
 def model_context_window(model: str) -> int:
@@ -153,11 +315,14 @@ def create_console(
     record: bool = False,
     file: IO[str] | None = None,
     force_terminal: bool | None = None,
+    theme: ThemeChoice | str | None = None,
 ) -> Console:
     """Create the shared Rich `Console` configured with Aldwin's theme."""
+    name = theme if isinstance(theme, str) else None
+    choice = resolve_theme_choice(name, plain=plain)
     return Console(
-        theme=THEME,
-        no_color=plain,
+        theme=rich_theme_for(choice),
+        no_color=plain or choice == "plain",
         highlight=False,
         width=width,
         record=record,

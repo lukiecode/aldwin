@@ -8,6 +8,7 @@ from typing import Final, Protocol
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
+from prompt_toolkit.input import Input
 from rich.table import Table
 from rich.text import Text
 
@@ -22,11 +23,14 @@ from aldwin.client import (
     WorkspaceError,
     WorkspaceSummary,
 )
-from aldwin.protocol import DoneEvent, ErrorEvent, TodoUpdatedEvent
+from aldwin.protocol import DoneEvent, ErrorEvent, HistoryEvent, TodoUpdatedEvent
+
+HISTORY_FETCH_LIMIT: Final[int] = 500
 
 SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
     ("/help", "Show commands and keyboard shortcuts"),
     ("/new", "Start a new conversation"),
+    ("/history", "Show this conversation’s saved messages"),
     ("/model", "Switch the OpenAI chat model"),
     ("/persona", "Show current persona and file path"),
     ("/memory", "Show profile, recent notes, and index status"),
@@ -39,14 +43,15 @@ SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
 )
 
 KEYBINDINGS_HELP: Final[tuple[tuple[str, str], ...]] = (
-    ("Enter", "Send message"),
-    ("Alt+Enter / Ctrl+J / \\+Enter", "Insert a new line"),
+    ("Enter", "Send message (queues while Aldwin is working)"),
+    ("Alt+Enter / Shift+Enter / Ctrl+J", "Insert a new line"),
     ("@", "Open the skill picker (then Tab to insert)"),
-    ("Esc", "Close skill picker, stop answer, or decline approval"),
-    ("?", "Show keyboard shortcuts (when prompt is empty)"),
-    ("↑ / ↓", "Previous / next message in history (or move in @ list)"),
+    ("Esc", "Stop answer, close overlay, or clear draft (double-Esc)"),
+    ("?", "Shortcuts in the footer (when prompt is empty)"),
+    ("↑ / ↓", "History, or move in slash / approval lists"),
     ("Ctrl+R", "Search input history"),
-    ("Ctrl+C twice / Ctrl+D", "Save and exit"),
+    ("Ctrl+C", "Clear draft; twice on empty prompt saves and exits"),
+    ("Ctrl+D", "Save and exit"),
 )
 
 
@@ -56,7 +61,12 @@ class SlashCommandClient(Protocol):
     @property
     def model(self) -> str: ...
 
+    @property
+    def updated_at(self) -> str | None: ...
+
     async def new_conversation(self) -> None: ...
+
+    async def history(self, limit: int = 20) -> HistoryEvent: ...
 
     async def list_models(self) -> list[str]: ...
 
@@ -132,7 +142,10 @@ async def _handle_model_command(
     client: SlashCommandClient,
     renderer: ChatRenderer,
     prompt_line: Callable[[str], Awaitable[str]],
+    input_dev: Input | None = None,
 ) -> None:
+    from aldwin.cli.picker import pick_index
+
     console = renderer.console
     show_all = arg.lower() == "all"
     if arg and not show_all:
@@ -160,38 +173,58 @@ async def _handle_model_command(
             f"use /model all for all {len(all_models)})"
         )
     console.print(Text(header, style="muted"))
-    for idx, name in enumerate(models, start=1):
-        marker = " (current)" if name == client.model else ""
-        style = "ok" if name == client.model else ""
-        console.print(Text(f"  {idx}. {name}{marker}", style=style))
 
-    try:
-        raw_choice = await prompt_line(
-            f"Choose model [1-{len(models)}, or Enter to cancel]: "
+    labels = [f"{name} (current)" if name == client.model else name for name in models]
+    default_idx = 0
+    if client.model in models:
+        default_idx = models.index(client.model)
+
+    use_picker = (
+        isinstance(input_dev, Input) and console.is_interactive and not renderer.plain
+    )
+    if use_picker:
+        chosen_idx = await pick_index(
+            labels,
+            default=default_idx,
+            input_dev=input_dev,
+            plain=renderer.plain,
         )
-    except (EOFError, KeyboardInterrupt):
-        raw_choice = ""
-
-    choice = raw_choice.strip()
-    if not choice:
-        console.print(Text(f"Model unchanged ({client.model}).", style="muted"))
-        return
-
-    if choice.isdigit():
-        idx = int(choice)
-        if 1 <= idx <= len(models):
-            chosen = models[idx - 1]
-        else:
-            console.print(
-                Text(
-                    f"Invalid selection {choice!r}. "
-                    f"Enter a number from 1 to {len(models)}.",
-                    style="err",
-                )
-            )
+        if chosen_idx is None:
+            console.print(Text(f"Model unchanged ({client.model}).", style="muted"))
             return
+        chosen = models[chosen_idx]
     else:
-        chosen = choice
+        for idx, name in enumerate(models, start=1):
+            marker = " (current)" if name == client.model else ""
+            style = "ok" if name == client.model else ""
+            console.print(Text(f"  {idx}. {name}{marker}", style=style))
+        try:
+            raw_choice = await prompt_line(
+                f"Choose model [1-{len(models)}, or Enter to cancel]: "
+            )
+        except (EOFError, KeyboardInterrupt):
+            raw_choice = ""
+
+        choice = raw_choice.strip()
+        if not choice:
+            console.print(Text(f"Model unchanged ({client.model}).", style="muted"))
+            return
+
+        if choice.isdigit():
+            idx = int(choice)
+            if 1 <= idx <= len(models):
+                chosen = models[idx - 1]
+            else:
+                console.print(
+                    Text(
+                        f"Invalid selection {choice!r}. "
+                        f"Enter a number from 1 to {len(models)}.",
+                        style="err",
+                    )
+                )
+                return
+        else:
+            chosen = choice
 
     res = await client.set_model(chosen)
     if isinstance(res, ErrorEvent):
@@ -354,6 +387,7 @@ async def handle_slash_command(
     renderer: ChatRenderer,
     prompt_line: Callable[[str], Awaitable[str]],
     on_reset_tokens: Callable[[], None] | None = None,
+    input_dev: Input | None = None,
 ) -> bool:
     """Execute a `/command` line.
 
@@ -376,13 +410,31 @@ async def handle_slash_command(
         renderer.render_new_conversation_divider()
         return False
 
+    if cmd == "/history":
+        try:
+            event = await client.history(limit=HISTORY_FETCH_LIMIT)
+        except ProtocolError as exc:
+            renderer.console.print(Text(str(exc), style="warn"))
+            return False
+        if not event.messages:
+            renderer.console.print(
+                Text("No messages in this conversation yet.", style="muted")
+            )
+            return False
+        renderer.render_history(
+            event,
+            updated_at=client.updated_at,
+            show_messages=True,
+        )
+        return False
+
     if cmd == "/todo":
         try:
             from aldwin.cli.todo_view import TodoViewState
 
-            event = await client.todo_get()
-            if event.total > 0:
-                renderer.todo_view.state = TodoViewState.from_event(event)
+            todo_event = await client.todo_get()
+            if todo_event.total > 0:
+                renderer.todo_view.state = TodoViewState.from_event(todo_event)
         except ProtocolError as exc:
             renderer.console.print(Text(str(exc), style="warn"))
         renderer.todo_view.print_current(renderer.console)
@@ -394,6 +446,7 @@ async def handle_slash_command(
             client=client,
             renderer=renderer,
             prompt_line=prompt_line,
+            input_dev=input_dev,
         )
         return False
 

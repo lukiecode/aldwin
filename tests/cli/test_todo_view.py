@@ -29,7 +29,7 @@ def test_todo_view_unicode_symbols() -> None:
     console.print(render_todo_block(_state(), plain=False, unicode=True))
     out = console.export_text()
     assert "Tasks 2/4" in out
-    assert "✔" in out
+    assert "☑" in out
     assert "▶" in out
     assert "☐" in out
     assert "✘" in out
