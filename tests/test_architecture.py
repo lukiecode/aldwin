@@ -110,6 +110,7 @@ def test_builtin_tools_returns_exact_six_names(aldwin_home: Path) -> None:
         "run_command",
         "remember",
         "recall",
+        "forget",
         "set_persona",
     )
     assert names == BUILTIN_TOOL_NAMES

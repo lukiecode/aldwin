@@ -71,6 +71,7 @@ def test_builtin_tools_returns_exact_six_names(aldwin_home: Path) -> None:
         "run_command",
         "remember",
         "recall",
+        "forget",
         "set_persona",
     )
     assert names == BUILTIN_TOOL_NAMES
@@ -110,6 +111,7 @@ def test_list_builtin_tools_metadata() -> None:
     assert by_name["web_fetch"].requires_approval is False
     assert by_name["remember"].requires_approval is False
     assert by_name["recall"].requires_approval is False
+    assert by_name["forget"].requires_approval is True
     assert by_name["list_dir"].requires_approval is False
     assert by_name["glob"].requires_approval is False
     assert by_name["grep"].requires_approval is False

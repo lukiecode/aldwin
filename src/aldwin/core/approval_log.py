@@ -34,7 +34,7 @@ LogSource = Literal["rule", "grant", "user", "no_approver", "error"]
 # - gh[pousr]_[A-Za-z0-9]{36,} (GitHub tokens)
 # - xox[abprs]-[A-Za-z0-9-]{10,} (Slack tokens)
 # - -----BEGIN ... PRIVATE KEY----- blocks or headers
-_SECRET_VALUE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(
         r"-----BEGIN [A-Z0-9 _-]*PRIVATE KEY-----"
         r"[\s\S]*?"
@@ -48,6 +48,8 @@ _SECRET_VALUE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
     re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b"),
     re.compile(r"\bALDWIN_CANARY_[A-Za-z0-9_-]+\b"),
 )
+# Back-compat alias used by older call sites.
+_SECRET_VALUE_PATTERNS: Final[tuple[re.Pattern[str], ...]] = SECRET_PATTERNS
 
 _SECRET_ASSIGN_RE: Final[re.Pattern[str]] = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*)"

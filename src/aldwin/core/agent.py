@@ -49,6 +49,7 @@ _RESERVED_SKILL_NAMES: Final[frozenset[str]] = frozenset(
         "run_command",
         "remember",
         "recall",
+        "forget",
         "set_persona",
         "list_dir",
         "glob",

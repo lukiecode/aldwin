@@ -23,6 +23,7 @@ from agentling import Tool
 from agentling.tools import ToolCallError
 
 from aldwin.core.approval_log import (
+    SECRET_PATTERNS,
     ApprovalLogger,
     LogAnswer,
     LogDecision,
@@ -126,6 +127,46 @@ def remember_tier(args: dict[str, Any]) -> Tier:
     if replace_val is not None and str(replace_val).strip() != "":
         return "diff"
     return "auto"
+
+
+_SECRET_ASSIGN_DETECT_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*)"
+    r"\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s;&|\"']+)",
+    re.IGNORECASE,
+)
+_DIGIT_RUN_RE = re.compile(r"(?<!\d)(?:\d[ -]*?){13,19}(?!\d)")
+
+
+def _luhn_ok(digits: str) -> bool:
+    """Return True when `digits` passes the Luhn check."""
+    if not digits.isdigit() or not (13 <= len(digits) <= 19):
+        return False
+    total = 0
+    reverse = digits[::-1]
+    for i, ch in enumerate(reverse):
+        n = int(ch)
+        if i % 2 == 1:
+            n *= 2
+            if n > 9:
+                n -= 9
+        total += n
+    return total % 10 == 0
+
+
+def looks_like_secret(text: str) -> bool:
+    """True when `text` matches shared secret patterns or a Luhn card number."""
+    if not text:
+        return False
+    for pattern in SECRET_PATTERNS:
+        if pattern.search(text):
+            return True
+    if _SECRET_ASSIGN_DETECT_RE.search(text):
+        return True
+    for match in _DIGIT_RUN_RE.finditer(text):
+        digits = re.sub(r"\D", "", match.group(0))
+        if _luhn_ok(digits):
+            return True
+    return False
 
 
 REGISTRY: Final[dict[str, ToolPolicy]] = {
@@ -285,7 +326,7 @@ DEFAULT_MAX_OUTPUT_CHARS_BY_TOOL: Final[dict[str, int]] = {
     "web_search": 10_000,
     "run_command": 10_000,
     "remember": 4_000,
-    "recall": 4_000,
+    "recall": 8_000,
     "forget": 4_000,
     "todo": 4_000,
     "calculate": 4_000,
@@ -2097,6 +2138,7 @@ __all__ = [
     "PreApprovedOutcome",
     "REGISTRY",
     "RISKY_PATTERNS",
+    "SECRET_PATTERNS",
     "Source",
     "StepCallItem",
     "Tier",
@@ -2114,6 +2156,7 @@ __all__ = [
     "is_blocked_path",
     "is_build_file",
     "is_secret_env_var",
+    "looks_like_secret",
     "match_blocked_command_path",
     "match_hardline",
     "normalise_command",

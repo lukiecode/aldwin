@@ -28,11 +28,11 @@ SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
     ("/new", "Start a new conversation"),
     ("/model", "Switch the OpenAI chat model"),
     ("/persona", "Show current persona and file path"),
-    ("/memory", "Show profile and recent notes"),
+    ("/memory", "Show profile, recent notes, and index status"),
     ("/skills", "List installed skills"),
     ("/workspace", "Show or switch the workspace folder"),
     ("/verbose", "Show or hide file previews for this session"),
-    ("/tools", "List built-in tools"),
+    ("/tools", "List built-in tools (includes recall, remember, forget)"),
     ("/exit", "Save and exit Aldwin"),
 )
 
@@ -239,6 +239,16 @@ def _render_memory(client: SlashCommandClient, renderer: ChatRenderer) -> None:
             console.print(Text(f"  - [{note.date}] {note.text}", style="fg"))
     else:
         console.print(Text("  (no recent notes)", style="muted"))
+
+    size_label = getattr(mem, "index_size_label", None) or "0 B"
+    console.print(
+        Text(
+            f"{getattr(mem, 'indexed_notes', 0)} notes · "
+            f"{getattr(mem, 'indexed_conversations', 0)} conversations indexed · "
+            f"index {size_label}",
+            style="muted",
+        )
+    )
 
 
 def _render_skills(client: SlashCommandClient, renderer: ChatRenderer) -> None:
