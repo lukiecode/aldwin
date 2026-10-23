@@ -155,6 +155,18 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
         description="Create or overwrite a text file after diff approval.",
         requires_approval=True,
     ),
+    ToolInfo(
+        name="read_document",
+        description=(
+            "Read a PDF, Word, PowerPoint, Excel, CSV/TSV, or HTML file as markdown."
+        ),
+        requires_approval=False,
+    ),
+    ToolInfo(
+        name="download_file",
+        description="Download a public URL into the workspace after y/n approval.",
+        requires_approval=True,
+    ),
 )
 
 

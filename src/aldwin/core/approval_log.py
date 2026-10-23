@@ -55,12 +55,23 @@ _SECRET_ASSIGN_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# URL / form query params: `token=…`, `key=…`, `password=…`, etc.
+_SECRET_QUERY_RE: Final[re.Pattern[str]] = re.compile(
+    r"([?&#]?)(key|token|secret|password|passwd|credential|api_key|access_token)"
+    r"=([^\s&#]*)",
+    re.IGNORECASE,
+)
+
 
 def redact_secrets(text: str) -> str:
     """Replace secret-shaped values and `NAME=value` assignments with `‹redacted›`."""
     if not text:
         return ""
     redacted = _SECRET_ASSIGN_RE.sub(rf"\1={REDACTED_PLACEHOLDER}", text)
+    redacted = _SECRET_QUERY_RE.sub(
+        rf"\1\2={REDACTED_PLACEHOLDER}",
+        redacted,
+    )
     for pattern in _SECRET_VALUE_PATTERNS:
         redacted = pattern.sub(REDACTED_PLACEHOLDER, redacted)
     return redacted

@@ -52,6 +52,8 @@ from aldwin.core.policy import (
 )
 from aldwin.core.settings import load_config, load_secrets, update_config_model
 from aldwin.core.tools import RememberTool, summarize_tool_result
+from aldwin.core.tools import documents as document_tools
+from aldwin.core.tools import download as download_tools
 from aldwin.core.tools import edits as edit_tools
 from aldwin.core.tools.files import row_summary as file_row_summary
 from aldwin.core.tools.files import running_summary as file_running_summary
@@ -921,14 +923,27 @@ class AldwinHost:
                             call.arguments,
                         )
                         tool_start_times[call.id] = time.monotonic()
-                        running = edit_tools.running_summary(
-                            call.name,
-                            call.arguments,
-                            self._workspace,
-                        ) or file_running_summary(
-                            call.name,
-                            call.arguments,
-                            self._workspace,
+                        running = (
+                            edit_tools.running_summary(
+                                call.name,
+                                call.arguments,
+                                self._workspace,
+                            )
+                            or file_running_summary(
+                                call.name,
+                                call.arguments,
+                                self._workspace,
+                            )
+                            or document_tools.running_summary(
+                                call.name,
+                                call.arguments,
+                                self._workspace,
+                            )
+                            or download_tools.running_summary(
+                                call.name,
+                                call.arguments,
+                                self._workspace,
+                            )
                         )
                         tool_running[call.id] = running
                         await scope.emit(
@@ -971,6 +986,14 @@ class AldwinHost:
                         running = tool_running.pop(res.tool_call_id, "")
                         if res.name in edit_tools.EDIT_TOOL_NAMES:
                             summary = edit_tools.row_summary(running, summary, ok=ok)
+                        elif res.name in document_tools.DOCUMENT_TOOL_NAMES:
+                            summary = document_tools.row_summary(
+                                running, summary, ok=ok
+                            )
+                        elif res.name in download_tools.DOWNLOAD_TOOL_NAMES:
+                            summary = download_tools.row_summary(
+                                running, summary, ok=ok
+                            )
                         else:
                             summary = file_row_summary(running, summary, ok=ok)
                         preview = ""

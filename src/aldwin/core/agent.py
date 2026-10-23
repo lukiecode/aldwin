@@ -56,6 +56,8 @@ _RESERVED_SKILL_NAMES: Final[frozenset[str]] = frozenset(
         "read_file",
         "edit_file",
         "write_file",
+        "read_document",
+        "download_file",
     }
 )
 
@@ -150,6 +152,8 @@ def build_tools(
     extra_tools: Sequence[Tool] = (),
 ) -> list[Tool]:
     """Construct built-in tools with `session_ctx` and wrap in policy."""
+    from aldwin.core.tools.documents import build_document_tools
+    from aldwin.core.tools.download import build_download_tool
     from aldwin.core.tools.edits import build_edit_tools
     from aldwin.core.tools.files import build_file_tools
     from aldwin.core.tools.memory_tools import build_memory_tools
@@ -200,6 +204,8 @@ def build_tools(
         ),
         *build_file_tools(session_ctx.workspace, session_ctx.policy_session),
         *build_edit_tools(session_ctx.workspace, session_ctx.policy_session),
+        *build_document_tools(session_ctx.workspace, session_ctx.policy_session),
+        build_download_tool(session_ctx.workspace, session_ctx.policy_session),
         *extra_tools,
     ]
     verify_registered_tools(raw_tools)
