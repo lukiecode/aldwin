@@ -1,0 +1,8 @@
+{
+  "id": "voice-04",
+  "title": "Direct answer with no sign-off",
+  "turns": [
+    {"role": "user", "text": "What is 15% of 1240?"},
+    {"role": "assistant", "text": "186.", "tools": ["calculate"]}
+  ]
+}

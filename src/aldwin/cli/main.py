@@ -184,8 +184,19 @@ def uninstall(
         "--purge",
         help="Also delete ~/.aldwin and all saved data.",
     ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Run uv tool uninstall without an interactive confirmation.",
+    ),
 ) -> None:
     """Uninstall Aldwin (keeps ~/.aldwin unless --purge is passed)."""
+    import shutil
+    import subprocess
+
+    from aldwin.cli.install_detect import detect_install_method, uninstall_command
+
     client = _load_client()
     try:
         result = client.bootstrap(plain=True, debug=False)
@@ -223,7 +234,67 @@ def uninstall(
     else:
         typer.echo(f"Your data in {result.display_home} is untouched.")
 
-    typer.echo("To remove the Aldwin command, run:\n  uv tool uninstall aldwin")
+    method = detect_install_method()
+    command = uninstall_command(method)
+    removed = False
+
+    if method == "uv":
+        if not yes:
+            if not _is_interactive_tty():
+                typer.echo(
+                    "Refusing to uninstall without confirmation. "
+                    "Re-run with --yes, or run:\n"
+                    f"  {command}",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            if not typer.confirm(
+                f"Run `{command}` to remove the Aldwin command?",
+                default=False,
+            ):
+                typer.echo("Aborted. Aldwin was not uninstalled.")
+                raise typer.Exit(code=1)
+
+        uv_bin = shutil.which("uv")
+        if uv_bin is None:
+            typer.echo(
+                f"`uv` was not found on PATH. Remove Aldwin with:\n  {command}",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        proc = subprocess.run(
+            [uv_bin, "tool", "uninstall", "aldwin"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "").strip()
+            if detail:
+                typer.echo(detail, err=True)
+            typer.echo(
+                f"Failed to uninstall Aldwin (exit {proc.returncode}).",
+                err=True,
+            )
+            raise typer.Exit(code=proc.returncode or 1)
+        removed = True
+    else:
+        typer.echo(f"To remove the Aldwin command, run:\n  {command}")
+
+    if removed and not purge:
+        typer.echo(
+            f"Aldwin removed. Your data is still in {result.display_home} "
+            f"(aldwin uninstall --purge to delete it)."
+        )
+    elif removed and purge:
+        typer.echo("Aldwin removed.")
+    elif method != "uv" and not purge:
+        # Printed the installer command above; still remind about data.
+        typer.echo(
+            f"Your data is still in {result.display_home} "
+            f"(aldwin uninstall --purge to delete it)."
+        )
 
 
 if __name__ == "__main__":

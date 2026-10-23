@@ -235,3 +235,32 @@ async def test_in_process_key_check_and_model_list_wrappers(
     monkeypatch.setattr(core_models, "list_chat_models", fake_list_models)
     models = await list_available_models(api_key="sk-test", home=aldwin_home)
     assert models == ["gpt-4o", "gpt-4.1", "o3-mini"]
+
+
+async def test_verify_active_openai_key_uses_home_secret(
+    aldwin_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`verify_active_openai_key` resolves the home key and maps check results."""
+    from pydantic import SecretStr
+
+    import aldwin.core.models as core_models
+    from aldwin.client import verify_active_openai_key
+    from aldwin.core.home import ensure_home
+    from aldwin.core.settings import SecretsConfig, save_secrets
+
+    ensure_home(aldwin_home)
+    save_secrets(
+        SecretsConfig(openai_api_key=SecretStr("sk-test-key-for-verify")),
+        home=aldwin_home,
+    )
+
+    async def fake_check_key(key: str) -> core_models.KeyStatus:
+        assert key == "sk-test-key-for-verify"
+        return core_models.KeyStatus.INVALID
+
+    monkeypatch.setattr(core_models, "check_key", fake_check_key)
+    assert await verify_active_openai_key(aldwin_home) == "invalid"
+
+    save_secrets(SecretsConfig(openai_api_key=SecretStr("")), home=aldwin_home)
+    assert await verify_active_openai_key(aldwin_home) == "invalid"

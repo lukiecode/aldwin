@@ -53,9 +53,11 @@ ERROR_COPY: Final[dict[ErrorCode, str]] = {
     "rate_limited": (
         "OpenAI is rate-limiting requests right now. Wait a moment and try again."
     ),
-    "model_unavailable": "Can't reach OpenAI. Check your connection and try again.",
+    "model_unavailable": (
+        "Can't reach OpenAI. Check your connection, then press ↑ Enter to retry."
+    ),
     "unknown_model": (
-        "That model isn't available on your account. Use /model to pick another."
+        "That model isn't available to your key. Pick another with /model."
     ),
     "busy": (
         "Aldwin is still working on your last request. Press Esc to stop it first."
@@ -68,12 +70,17 @@ ERROR_COPY: Final[dict[ErrorCode, str]] = {
         "That approval prompt has already expired. Try your request again."
     ),
     "internal": "Something went wrong. Details are in ~/.aldwin/logs/aldwin.log",
+    "not_found": "Something went wrong. Details are in ~/.aldwin/logs/aldwin.log",
 }
 
 INTERRUPTED_NOTICE: Final[str] = (
     "Your last request was interrupted. Say *continue* to pick it up."
 )
 MAX_STEPS_NOTICE: Final[str] = "Stopped after 15 steps. Say *continue* to keep going."
+CONTEXT_NEARLY_FULL_NOTICE: Final[str] = (
+    "Context nearly full. Older messages will be dropped; /new starts fresh."
+)
+# Fallback tip when rotation is unavailable (tests / first-run body).
 TIPS_LINE: Final[str] = (
     'Try: "what can you do?"  ·  /help  ·  /history  ·  Esc stops an answer'
 )
@@ -324,6 +331,7 @@ class ChatRenderer:
         model: str,
         display_home: str,
         display_workspace: str | None = None,
+        tip: str | None = None,
     ) -> None:
         """Render the everyday welcome card (borderless, no panel chrome)."""
         from aldwin.cli.brand import TAGLINE
@@ -332,20 +340,23 @@ class ChatRenderer:
         if first_run:
             title = Text("Welcome to Aldwin", style="accent")
             body = Text(TAGLINE, style="fg")
-        else:
-            raw_loc = (
-                f"workspace: {display_workspace}" if display_workspace else display_home
-            )
-            max_loc = max(12, width - len(model) - 18)
-            shown_loc = (
-                raw_loc if len(raw_loc) <= max_loc else f"…{raw_loc[-(max_loc - 1) :]}"
-            )
-            title = Text()
-            title.append("Aldwin", style="accent")
-            title.append(f" · {model} · {shown_loc}", style="muted")
-            body = Text(TIPS_LINE, style="muted")
+            self.console.print(title)
+            self.console.print(body)
+            return
+
+        raw_loc = (
+            f"workspace: {display_workspace}" if display_workspace else display_home
+        )
+        max_loc = max(12, width - len(model) - 18)
+        shown_loc = (
+            raw_loc if len(raw_loc) <= max_loc else f"…{raw_loc[-(max_loc - 1) :]}"
+        )
+        title = Text()
+        title.append("Aldwin", style="accent")
+        title.append(f" · {model} · {shown_loc}", style="muted")
         self.console.print(title)
-        self.console.print(body)
+        if tip:
+            self.console.print(Text(tip, style="muted"))
 
     def render_history(
         self,
@@ -589,7 +600,16 @@ class ChatRenderer:
 
     def render_error(self, code: ErrorCode, message: str = "") -> None:
         """Render a protocol `ErrorEvent` as one actionable line."""
-        copy = ERROR_COPY.get(code) or message or ERROR_COPY["internal"]
+        # Host sends the full unknown_model sentence (includes the model name).
+        # Prefer host "busy" copy for rate_limited so 503 is not shown as rate-limit.
+        stripped = message.strip()
+        lowered = stripped.lower()
+        if code == "unknown_model" and stripped and "isn't available" in lowered:
+            copy = stripped
+        elif code == "rate_limited" and stripped and "busy" in lowered:
+            copy = stripped
+        else:
+            copy = ERROR_COPY.get(code) or message or ERROR_COPY["internal"]
         line = Text()
         line.append("✗ ", style="err")
         line.append(copy, style="err")
@@ -598,6 +618,10 @@ class ChatRenderer:
     def render_status_notice(self, message: str) -> None:
         """Render a non-terminal status notice such as a retry message."""
         self.console.print(Text(f"  {message}", style="muted"))
+
+    def render_context_notice(self) -> None:
+        """Print the one-shot nearly-full context warning."""
+        self.console.print(Text(CONTEXT_NEARLY_FULL_NOTICE, style="muted"))
 
     def start_turn(
         self,
@@ -638,6 +662,7 @@ class TurnRenderer:
         self._markdown_buffer: str = ""
         self._has_printed_text: bool = False
         self._last_printed_kind: Literal["none", "tool", "text"] = "none"
+        self._retry_status: str | None = None
         self._live: Live | None = None
         self._approval_live: Live | None = None
         self._approval_event: ApprovalEvent | None = None
@@ -659,9 +684,15 @@ class TurnRenderer:
         """Reset stall timer after text / tool / status activity."""
         self._last_activity_at = self._clock()
 
+    def _clear_retry_status(self) -> None:
+        """Drop the in-place retry line once real turn activity resumes."""
+        self._retry_status = None
+
     @property
     def _spinner_text(self) -> str:
         """Status verb derived from the current spinner mode."""
+        if self._retry_status:
+            return self._retry_status
         if self._spinner_mode == "responding":
             return "Writing…"
         if self._spinner_mode == "waiting":
@@ -883,6 +914,7 @@ class TurnRenderer:
         """Append a `text` delta and flush finished markdown blocks."""
         if not delta:
             return
+        self._clear_retry_status()
         self._spinner_mode = "responding"
         self._note_activity()
         self._token_estimate += max(1, len(delta) // 4)
@@ -895,6 +927,7 @@ class TurnRenderer:
 
     def on_tool_call(self, event: ToolCallEvent) -> None:
         """Flush buffered text, track pending `●` card, and update spinner."""
+        self._clear_retry_status()
         self._flush_markdown_buffer()
         self._note_activity()
         self._spinner_mode = "tool_use"
@@ -1001,9 +1034,13 @@ class TurnRenderer:
         self._last_printed_kind = "tool"
 
     def on_status(self, message: str) -> None:
-        """Render a non-terminal status event."""
+        """Update one in-place retry line (Live) instead of stacking permanent lines."""
         self._note_activity()
-        self._chat.render_status_notice(message)
+        self._retry_status = message
+        # Interactive Live paints `_retry_status` via the spinner line.
+        # Plain / non-TTY: keep latest in memory only (no stacked permanent lines).
+        if not self.plain and self.console.is_interactive:
+            self._refresh_live()
 
     def pause_for_approval(self, event: ApprovalEvent) -> None:
         """Stop turn `Live` and show the transient approval box."""

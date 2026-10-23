@@ -41,7 +41,11 @@ from aldwin.core.agent import (
 )
 from aldwin.core.approval_log import ApprovalLogger, LogTier
 from aldwin.core.home import home_dir
-from aldwin.core.models import RetryingModel, classify_model_error
+from aldwin.core.models import (
+    RetryingModel,
+    classify_model_error,
+    retry_status_message,
+)
 from aldwin.core.policy import (
     ApprovalAnswer as PolicyApprovalAnswer,
 )
@@ -186,9 +190,13 @@ def _to_token_usage(usage: Usage | None) -> TokenUsage | None:
     )
 
 
-def classify_turn_error(exc: BaseException) -> tuple[ErrorCode, str]:
+def classify_turn_error(
+    exc: BaseException,
+    *,
+    model: str | None = None,
+) -> tuple[ErrorCode, str]:
     """Map an Agentling or OpenAI exception to a protocol `(ErrorCode, message)`."""
-    return classify_model_error(exc)
+    return classify_model_error(exc, model=model)
 
 
 class RequestScope:
@@ -699,7 +707,8 @@ class AldwinHost:
         self,
         attempt: int,
         max_retries: int,
-        _exc: BaseException,
+        exc: BaseException,
+        delay_s: float,
     ) -> None:
         """Emit a non-terminal `StatusEvent` when the model retries."""
         scope = self._active_turn_scope
@@ -707,7 +716,12 @@ class AldwinHost:
             await scope.emit(
                 StatusEvent(
                     re=scope.req_id,
-                    message=f"OpenAI is busy, retrying ({attempt} of {max_retries})…",
+                    message=retry_status_message(
+                        exc,
+                        attempt=attempt,
+                        max_retries=max_retries,
+                        delay_s=delay_s,
+                    ),
                 )
             )
 
@@ -1205,7 +1219,7 @@ class AldwinHost:
                 self._policy_session.clear_step_calls()
                 logger.exception("Turn %s failed", req.id)
                 self._persist_session(interrupted=True)
-                code, msg = classify_turn_error(exc)
+                code, msg = classify_turn_error(exc, model=self._model)
                 if not scope.terminated:
                     await scope.error(code, msg)
             finally:

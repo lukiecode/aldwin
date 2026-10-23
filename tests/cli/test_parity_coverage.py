@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import StringIO
 
+from prompt_toolkit.formatted_text import to_plain_text
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
@@ -45,25 +46,27 @@ def test_dock_busy_and_contextual_footers() -> None:
         )
         session.attach_key_bindings()
         session.set_busy(True)
-        assert "esc to interrupt" in session._toolbar_text()
-        assert "model" in session._toolbar_text()
+        busy = to_plain_text(session._toolbar_text())
+        assert "esc to interrupt" in busy
+        assert "model" in busy
         session.set_busy(False)
         session.set_footer("interrupt")
-        assert "esc to interrupt" in session._toolbar_text()
+        assert "esc to interrupt" in to_plain_text(session._toolbar_text())
         session.set_footer("paste", left="paste again to expand")
-        assert "paste again" in session._toolbar_text()
+        assert "paste again" in to_plain_text(session._toolbar_text())
         session.set_footer("shortcuts")
-        assert "send" in session._toolbar_text() or "↵" in session._toolbar_text()
+        shortcuts = to_plain_text(session._toolbar_text())
+        assert "send" in shortcuts or "↵" in shortcuts
         session.set_footer("ctrl_c", left="Press Ctrl-C again to exit")
-        assert "Ctrl-C again" in session._toolbar_text()
+        assert "Ctrl-C again" in to_plain_text(session._toolbar_text())
         session.set_footer("idle")
-        assert "? for shortcuts" in session._toolbar_text()
+        assert "? for shortcuts" in to_plain_text(session._toolbar_text())
         session.set_footer("ctrl_c")
-        assert "Ctrl-C again" in session._toolbar_text()
+        assert "Ctrl-C again" in to_plain_text(session._toolbar_text())
         session.set_footer("paste")
-        assert "paste again" in session._toolbar_text()
+        assert "paste again" in to_plain_text(session._toolbar_text())
         session2 = AldwinPromptSession(input=pipe, output=DummyOutput())
-        assert session2._toolbar_text().strip().startswith("?")
+        assert to_plain_text(session2._toolbar_text()).strip().startswith("?")
 
 
 def test_set_terminal_title_strips_controls() -> None:

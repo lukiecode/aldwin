@@ -1,0 +1,16 @@
+{
+  "id": "voice-05",
+  "title": "Brief progress update mid-tools",
+  "turns": [
+    {"role": "user", "text": "Summarise the three PDFs in bills/."},
+    {
+      "role": "assistant",
+      "text": "Reading the first bill PDF.",
+      "tools": ["read_document"]
+    },
+    {
+      "role": "assistant",
+      "text": "Two left; combining totals next."
+    }
+  ]
+}

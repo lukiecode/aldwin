@@ -44,27 +44,120 @@ def test_cli_main_routes_to_chat_and_version(
     assert routed[0].plain is True
 
 
+def test_uninstall_uv_yes_runs_subprocess(
+    aldwin_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """uv install + --yes runs `uv tool uninstall aldwin`."""
+    import subprocess
+
+    import aldwin.cli.install_detect as detect_mod
+
+    runner.invoke(app, [])
+    assert aldwin_home.exists()
+
+    calls: list[list[str]] = []
+
+    class _Proc:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> _Proc:
+        calls.append(list(cmd))
+        return _Proc()
+
+    monkeypatch.setattr(detect_mod, "detect_install_method", lambda: "uv")
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/uv")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    res = runner.invoke(app, ["uninstall", "--yes"])
+    assert res.exit_code == 0, res.output
+    assert aldwin_home.exists()
+    assert calls == [["/usr/bin/uv", "tool", "uninstall", "aldwin"]]
+    assert "Aldwin removed" in res.output
+    assert "uninstall --purge" in res.output
+
+
+def test_uninstall_uv_decline_does_not_run(
+    aldwin_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Declining the uv confirm leaves the tool installed."""
+    import aldwin.cli.install_detect as detect_mod
+
+    runner.invoke(app, [])
+    monkeypatch.setattr(detect_mod, "detect_install_method", lambda: "uv")
+    monkeypatch.setattr(cli_main, "_is_interactive_tty", lambda: True)
+
+    ran = False
+
+    def boom(*_a: object, **_k: object) -> None:
+        nonlocal ran
+        ran = True
+        raise AssertionError("subprocess should not run")
+
+    monkeypatch.setattr("subprocess.run", boom)
+    res = runner.invoke(app, ["uninstall"], input="n\n")
+    assert res.exit_code == 1
+    assert not ran
+    assert aldwin_home.exists()
+    assert "Aborted" in res.output
+
+
+def test_uninstall_uv_noninteractive_requires_yes(
+    aldwin_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-TTY without --yes refuses to uninstall."""
+    import aldwin.cli.install_detect as detect_mod
+
+    runner.invoke(app, [])
+    monkeypatch.setattr(detect_mod, "detect_install_method", lambda: "uv")
+    monkeypatch.setattr(cli_main, "_is_interactive_tty", lambda: False)
+
+    res = runner.invoke(app, ["uninstall"])
+    assert res.exit_code == 1
+    assert "--yes" in res.output
+    assert aldwin_home.exists()
+
+
+def test_uninstall_pipx_prints_command(
+    aldwin_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pipx install prints the command and removes nothing."""
+    import aldwin.cli.install_detect as detect_mod
+
+    runner.invoke(app, [])
+    monkeypatch.setattr(detect_mod, "detect_install_method", lambda: "pipx")
+
+    res = runner.invoke(app, ["uninstall"])
+    assert res.exit_code == 0, res.output
+    assert "pipx uninstall aldwin" in res.output
+    assert "Aldwin removed" not in res.output
+    assert aldwin_home.exists()
+
+
 def test_uninstall_keeps_data_and_purge_requires_double_confirmation(
     aldwin_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """uninstall keeps data; --purge requires both y/n and folder name."""
-    # Populate aldwin_home
+    """--purge deletes data after confirm; then prints/runs tool remove."""
+    import subprocess
+
+    import aldwin.cli.install_detect as detect_mod
+
     runner.invoke(app, [])
     assert aldwin_home.exists()
     assert (aldwin_home / "config.yaml").is_file()
 
-    # (a) `aldwin uninstall` without --purge keeps data and prints uv command
-    keep_res = runner.invoke(app, ["uninstall"])
-    assert keep_res.exit_code == 0, keep_res.output
-    assert "uv tool uninstall aldwin" in keep_res.output
-    assert aldwin_home.exists()
+    monkeypatch.setattr(detect_mod, "detect_install_method", lambda: "pip")
 
-    # (b1) `aldwin uninstall --purge` declined at y/n confirmation
     decline_res = runner.invoke(app, ["uninstall", "--purge"], input="n\n")
     assert decline_res.exit_code == 1
     assert aldwin_home.exists()
 
-    # (b2) `aldwin uninstall --purge` with wrong folder name
     wrong_name_res = runner.invoke(
         app,
         ["uninstall", "--purge"],
@@ -74,15 +167,29 @@ def test_uninstall_keeps_data_and_purge_requires_double_confirmation(
     assert "did not match" in wrong_name_res.output
     assert aldwin_home.exists()
 
-    # (c) `aldwin uninstall --purge` with y and exact folder name deletes home
     purge_res = runner.invoke(
         app,
         ["uninstall", "--purge"],
         input=f"y\n{aldwin_home.name}\n",
     )
     assert purge_res.exit_code == 0, purge_res.output
-    assert "uv tool uninstall aldwin" in purge_res.output
+    assert "pip uninstall aldwin" in purge_res.output
     assert not aldwin_home.exists()
+
+    # Restore home for isolation; exercise uv failure path.
+    runner.invoke(app, [])
+    monkeypatch.setattr(detect_mod, "detect_install_method", lambda: "uv")
+    monkeypatch.setattr("shutil.which", lambda _name: "/usr/bin/uv")
+
+    class _Fail:
+        returncode = 2
+        stdout = ""
+        stderr = "boom"
+
+    monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: _Fail())
+    fail_res = runner.invoke(app, ["uninstall", "--yes"])
+    assert fail_res.exit_code == 2
+    assert "Aldwin removed" not in fail_res.output
 
 
 def test_setup_cli_command_end_to_end(

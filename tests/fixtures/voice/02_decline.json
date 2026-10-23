@@ -1,0 +1,11 @@
+{
+  "id": "voice-02",
+  "title": "One-line acknowledge after a decline",
+  "turns": [
+    {"role": "user", "text": "Delete ~/.ssh/id_rsa"},
+    {
+      "role": "assistant",
+      "text": "That was declined. What would you like to do instead?"
+    }
+  ]
+}

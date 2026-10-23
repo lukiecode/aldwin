@@ -178,12 +178,12 @@ unset OPENAI_API_KEY TAVILY_API_KEY ALDWIN_HOME NO_COLOR
 ### Step 13: Upgrade, `aldwin uninstall`, and `aldwin uninstall --purge`
 - **Action:**
   1. Run `uv tool upgrade aldwin` (or reinstall with `uv tool install --force ...`) and verify `~/.aldwin/persona.md`, `memory/`, and `sessions/` are untouched.
-  2. Run `aldwin uninstall`.
+  2. Run `aldwin uninstall`, answer `y` when asked to run `uv tool uninstall aldwin` (or use `--yes`).
   3. Run `aldwin uninstall --purge`, answer `n` first (verify data kept), then run `aldwin uninstall --purge`, answer `y`, and type the folder name (`home` or `.aldwin`).
 - **Expected:**
   - `uv tool upgrade` keeps all user data and custom edits intact.
-  - `aldwin uninstall` keeps `~/.aldwin` and prints `uv tool uninstall aldwin`.
-  - `aldwin uninstall --purge` asks twice (`[y/n]` + exact folder name), deletes `~/.aldwin`, and prints `uv tool uninstall aldwin`.
+  - `aldwin uninstall` keeps `~/.aldwin`, runs `uv tool uninstall aldwin` after confirm, and ends with `Aldwin removed. Your data is still in …`.
+  - `aldwin uninstall --purge` asks twice (`[y/n]` + exact folder name), deletes `~/.aldwin`, then uninstalls or prints the tool-remove step as above.
 - [ ] Pass / Fail
 
 ---

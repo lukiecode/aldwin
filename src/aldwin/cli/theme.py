@@ -122,6 +122,8 @@ PROMPT_STYLE: Final[Style] = Style.from_dict(
         "prompt": f"{ACCENT_HEX} bold",
         "bottom-toolbar": "noreverse ansibrightblack",
         "bottom-toolbar.text": "noreverse ansibrightblack",
+        "bottom-toolbar.warn": "noreverse ansiyellow",
+        "bottom-toolbar.err": "noreverse ansired",
         "completion-menu": "bg:default ansiwhite",
         "completion-menu.completion": "bg:default ansiwhite",
         "completion-menu.completion.current": f"{ACCENT_HEX} bold",
@@ -137,6 +139,8 @@ PLAIN_PROMPT_STYLE: Final[Style] = Style.from_dict(
         "prompt": "",
         "bottom-toolbar": "noreverse",
         "bottom-toolbar.text": "noreverse",
+        "bottom-toolbar.warn": "noreverse",
+        "bottom-toolbar.err": "noreverse",
         "ghost": "italic",
     }
 )
@@ -262,6 +266,15 @@ def context_left_percent(model: str, used_tokens: int) -> int:
     clamped_used = max(0, int(used_tokens))
     remaining = max(0.0, float(window - clamped_used)) / float(window) * 100.0
     return max(0, min(100, round(remaining)))
+
+
+def context_meter_level(pct: int) -> Literal["ok", "warn", "err"]:
+    """Return footer meter severity for remaining context percent."""
+    if pct <= 10:
+        return "err"
+    if pct <= 20:
+        return "warn"
+    return "ok"
 
 
 def is_canonical_model(model_id: str) -> bool:

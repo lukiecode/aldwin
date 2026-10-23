@@ -7,6 +7,7 @@ from collections.abc import Callable
 from typing import Final, Literal
 
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import AnyFormattedText, FormattedText
 from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
 from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
 from prompt_toolkit.keys import Keys
@@ -56,7 +57,7 @@ class AldwinPromptSession(PromptSession[str]):
         self,
         *args: object,
         on_quit: Callable[[], None] | None = None,
-        footer_right: Callable[[], str] | None = None,
+        footer_right: Callable[[], str | FormattedText] | None = None,
         paste_store: object | None = None,
         **kwargs: object,
     ) -> None:
@@ -109,13 +110,19 @@ class AldwinPromptSession(PromptSession[str]):
             return " · ".join(f"{k} {v}" for k, v in SHORTCUTS_PANEL[:4])
         return "? for shortcuts"
 
-    def _toolbar_text(self) -> str:
+    def _toolbar_text(self) -> AnyFormattedText:
         left = f" {self._left_hint()} "
-        right = self._footer_right().rstrip()
-        if not right:
+        right = self._footer_right()
+        if isinstance(right, str):
+            right_plain = right.rstrip()
+            if not right_plain:
+                return left
+            # prompt_toolkit bottom_toolbar is one line; right side appended with gap.
+            return f"{left}  {right_plain}"
+        fragments = list(right)
+        if not fragments:
             return left
-        # prompt_toolkit bottom_toolbar is one line; right side appended with gap.
-        return f"{left}  {right}"
+        return FormattedText([("", f"{left}  "), *fragments])
 
     def attach_key_bindings(self, extra: KeyBindings | None = None) -> KeyBindings:
         """Return key bindings including Ctrl+C clear/quit and newline helpers."""

@@ -148,6 +148,16 @@ async def check_openai_key(api_key: str) -> KeyCheckResult:
     return "invalid"
 
 
+async def verify_active_openai_key(home: Path | None = None) -> KeyCheckResult:
+    """Validate the resolved OpenAI key for `home` without exposing it to doors."""
+    root = (home if home is not None else home_dir()).expanduser().resolve()
+    resolved = resolve_key("openai", root)
+    key = (resolved.key or "").strip()
+    if not key:
+        return "invalid"
+    return await check_openai_key(key)
+
+
 async def list_available_models(
     api_key: str | None = None,
     home: Path | None = None,
@@ -576,6 +586,7 @@ __all__ = [
     "WorkspaceSummary",
     "bootstrap_host",
     "check_openai_key",
+    "verify_active_openai_key",
     "get_builtin_tools",
     "get_memory_summary",
     "get_onboarding_status",

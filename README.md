@@ -48,8 +48,8 @@ Later runs show a compact welcome card and a muted `continuing from …` line (n
 |---|---|
 | `aldwin` | Open the interactive chat and resume the latest conversation |
 | `aldwin setup` | Configure or update API keys and the default model |
-| `aldwin uninstall` | Print the uninstall command while keeping `~/.aldwin` intact |
-| `aldwin uninstall --purge` | Delete `~/.aldwin` (after two confirmations) and print the uninstall command |
+| `aldwin uninstall` | Remove the Aldwin command when installed with `uv tool` (confirm, or `--yes`); otherwise print the pipx/pip command. Keeps `~/.aldwin` |
+| `aldwin uninstall --purge` | Delete `~/.aldwin` (after two confirmations), then remove or print the uninstall command as above |
 | `aldwin --plain` | Disable ANSI colours, live animations, and the terminal bell (also enabled by `NO_COLOR=1`) |
 | `aldwin --debug` | Enable `DEBUG`-level event logging in `~/.aldwin/logs/aldwin.log` |
 | `aldwin --version` | Print the installed version (`aldwin 0.0.1`) and exit |
