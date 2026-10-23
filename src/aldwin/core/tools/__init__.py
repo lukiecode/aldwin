@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
     from aldwin.core.settings import SecretsConfig
     from aldwin.core.tools.memory_tools import (
+        ForgetTool,
         RecallTool,
         RememberTool,
         build_memory_tools,
@@ -32,6 +33,7 @@ BUILTIN_TOOL_NAMES: Final[tuple[str, ...]] = (
     "run_command",
     "remember",
     "recall",
+    "forget",
     "set_persona",
 )
 
@@ -112,13 +114,20 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
     ),
     ToolInfo(
         name="remember",
-        description="Save a short, durable fact to today's memory notes.",
+        description=(
+            "Save a short durable fact, or update one in place with replace=."
+        ),
         requires_approval=False,
     ),
     ToolInfo(
         name="recall",
-        description="Search recent memory notes by keywords.",
+        description="Search memory notes and past conversations (ranked).",
         requires_approval=False,
+    ),
+    ToolInfo(
+        name="forget",
+        description="Delete a saved memory note after diff approval.",
+        requires_approval=True,
     ),
     ToolInfo(
         name="set_persona",
@@ -235,7 +244,7 @@ def builtin_tools(
         cwd=cwd,
         env=env,
     )
-    remember_tool, recall_tool = build_memory_tools(
+    remember_tool, recall_tool, forget_tool = build_memory_tools(
         home=home,
         session_id_getter=session_id_getter,
     )
@@ -250,6 +259,7 @@ def builtin_tools(
         run_command_tool,
         remember_tool,
         recall_tool,
+        forget_tool,
         persona_tool,
     ]
 
@@ -261,7 +271,7 @@ def list_builtin_tools() -> list[ToolInfo]:
 
 def __getattr__(name: str) -> Any:
     """Lazily import tool classes so `aldwin --version` avoids loading `agentling`."""
-    if name in ("RecallTool", "RememberTool", "build_memory_tools"):
+    if name in ("ForgetTool", "RecallTool", "RememberTool", "build_memory_tools"):
         from aldwin.core.tools import memory_tools
 
         return getattr(memory_tools, name)
@@ -275,6 +285,7 @@ def __getattr__(name: str) -> Any:
 __all__ = [
     "AskFn",
     "BUILTIN_TOOL_NAMES",
+    "ForgetTool",
     "RecallTool",
     "RememberTool",
     "SetPersonaTool",

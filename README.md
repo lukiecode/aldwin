@@ -65,7 +65,7 @@ Type `/` at the prompt for autocomplete:
 | `/new` | Start a fresh conversation (previous session stays saved on disk) |
 | `/model [name\|all]` | List available OpenAI chat models and switch models mid-conversation |
 | `/persona` | Show the active persona and `~/.aldwin/persona.md` character count |
-| `/memory` | Show `~/.aldwin/memory/profile.md` status and notes from the last 7 days |
+| `/memory` | Show profile, recent notes, and index status (`N notes · M conversations indexed · index <size>`) |
 | `/skills` | List installed skills in `~/.aldwin/skills/` and flag any invalid `SKILL.md` files |
 | `/workspace` | Show the workspace folder, or switch it with `/workspace <path>` |
 | `/verbose` | Show or hide up to 12 preview lines under file-tool rows for this session |
@@ -88,17 +88,16 @@ Type `/` at the prompt for autocomplete:
 
 ## What it can do
 
-### Five built-in tools
-
-Aldwin `0.0.1` ships with five user-facing tools (and one internal `set_persona` tool):
+### Built-in tools (memory)
 
 | Tool | What it does | Needs `y/n` approval? |
 |---|---|---|
 | `web_search` | Searches the web via Tavily for current information | No |
 | `web_fetch` | Fetches and extracts readable text from an `http`/`https` page (≤ 20,000 chars) | No |
-| `run_command` | Runs a shell command in the directory where you launched `aldwin` | **Always** |
-| `remember` | Appends a single-line dated note to `~/.aldwin/memory/notes/YYYY-MM-DD.md` | No |
-| `recall` | Searches your daily notes by keyword | No |
+| `run_command` | Runs a shell command in the active workspace | **Always** |
+| `remember` | Appends a note, or updates one in place with `replace=<note_id>` | No for new; **Diff** for replace |
+| `recall` | Ranked search over notes and saved conversations (`scope`) | No |
+| `forget` | Deletes a matching memory note after showing it | **Diff** (never grantable) |
 
 ### Skills
 
@@ -117,7 +116,7 @@ Aldwin lists available skill names and descriptions in the system prompt and loa
 ### Memory and persona
 
 - **Profile (`~/.aldwin/memory/profile.md`):** durable facts about you (up to 4,000 characters), always included in the system prompt. Only you can edit this file; the agent cannot modify it.
-- **Daily notes (`~/.aldwin/memory/notes/YYYY-MM-DD.md`):** short one-line notes saved when Aldwin calls `remember`. Notes from the last 7 days (up to 4,000 characters, newest first) are included in the prompt and age out after a week.
+- **Daily notes (`~/.aldwin/memory/notes/YYYY-MM-DD.md`):** short one-line notes saved when Aldwin calls `remember` (up to 500 characters each). Notes from the last 7 days (up to 4,000 characters, newest first) are included in the prompt and age out after a week. A rebuildable SQLite FTS5 index at `~/.aldwin/memory/index.sqlite` powers ranked `recall` over notes and conversations; `/memory` shows how many are indexed.
 - **Persona (`~/.aldwin/persona.md`):** controls Aldwin's tone and style (up to 2,000 characters). You can edit the file directly or ask Aldwin to change how it talks (for example, *"Be more direct and concise"*), which shows the proposed `persona.md` in an approval box and asks `y/n` before saving.
 
 ---

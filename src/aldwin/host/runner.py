@@ -57,6 +57,7 @@ from aldwin.core.tools import download as download_tools
 from aldwin.core.tools import edits as edit_tools
 from aldwin.core.tools.files import row_summary as file_row_summary
 from aldwin.core.tools.files import running_summary as file_running_summary
+from aldwin.core.tools.memory_tools import running_summary as memory_running_summary
 from aldwin.core.workspace import Workspace, format_outside_display
 from aldwin.host.in_process import InProcessTransport, WorkspaceSummary
 from aldwin.host.sessions import (
@@ -940,6 +941,11 @@ class AldwinHost:
                                 self._workspace,
                             )
                             or download_tools.running_summary(
+                                call.name,
+                                call.arguments,
+                                self._workspace,
+                            )
+                            or memory_running_summary(
                                 call.name,
                                 call.arguments,
                                 self._workspace,

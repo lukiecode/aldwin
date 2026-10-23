@@ -28,7 +28,7 @@ SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
     ("/new", "Start a new conversation"),
     ("/model", "Switch the OpenAI chat model"),
     ("/persona", "Show current persona and file path"),
-    ("/memory", "Show profile and recent notes"),
+    ("/memory", "Show profile, recent notes, and index status"),
     ("/skills", "List installed skills"),
     ("/workspace", "Show or switch the workspace folder"),
     ("/verbose", "Show or hide file previews for this session"),
@@ -239,6 +239,22 @@ def _render_memory(client: SlashCommandClient, renderer: ChatRenderer) -> None:
             console.print(Text(f"  - [{note.date}] {note.text}", style="fg"))
     else:
         console.print(Text("  (no recent notes)", style="muted"))
+
+    index_size = getattr(mem, "index_size_bytes", 0) or 0
+    if index_size < 1024:
+        size_label = f"{index_size} B"
+    elif index_size < 1024 * 1024:
+        size_label = f"{index_size / 1024:.1f} KB"
+    else:
+        size_label = f"{index_size / (1024 * 1024):.1f} MB"
+    console.print(
+        Text(
+            f"{getattr(mem, 'indexed_notes', 0)} notes · "
+            f"{getattr(mem, 'indexed_conversations', 0)} conversations indexed · "
+            f"index {size_label}",
+            style="muted",
+        )
+    )
 
 
 def _render_skills(client: SlashCommandClient, renderer: ChatRenderer) -> None:

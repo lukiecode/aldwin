@@ -255,6 +255,7 @@ def test_readme_contains_all_fr1_sections_and_doc_links() -> None:
         "run_command",
         "remember",
         "recall",
+        "forget",
         "~/.aldwin",
         "ALDWIN_HOME",
         "https://agentling.dev",

@@ -132,6 +132,11 @@ class FakeHost:
                 description="Search recent memory notes by keywords.",
                 requires_approval=False,
             ),
+            ToolInfo(
+                name="forget",
+                description="Delete a saved memory note after approval.",
+                requires_approval=True,
+            ),
         ]
 
     def queue_turn(self, events: list[Event]) -> None:
