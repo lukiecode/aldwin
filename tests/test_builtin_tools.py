@@ -98,6 +98,8 @@ def test_list_builtin_tools_metadata() -> None:
         "write_file",
         "read_document",
         "download_file",
+        "todo",
+        "calculate",
     ]
 
     by_name: dict[str, ToolInfo] = {item.name: item for item in items}
@@ -120,6 +122,8 @@ def test_list_builtin_tools_metadata() -> None:
     assert by_name["write_file"].requires_approval is True
     assert by_name["read_document"].requires_approval is False
     assert by_name["download_file"].requires_approval is True
+    assert by_name["todo"].requires_approval is False
+    assert by_name["calculate"].requires_approval is False
 
 
 def test_tool_output_and_summarize_tool_result_contract() -> None:

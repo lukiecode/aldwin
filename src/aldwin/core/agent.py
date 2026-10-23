@@ -153,6 +153,7 @@ def build_tools(
     extra_tools: Sequence[Tool] = (),
 ) -> list[Tool]:
     """Construct built-in tools with `session_ctx` and wrap in policy."""
+    from aldwin.core.tools.calculate import build_calculate_tool
     from aldwin.core.tools.documents import build_document_tools
     from aldwin.core.tools.download import build_download_tool
     from aldwin.core.tools.edits import build_edit_tools
@@ -160,6 +161,7 @@ def build_tools(
     from aldwin.core.tools.memory_tools import build_memory_tools
     from aldwin.core.tools.persona_tool import build_persona_tool
     from aldwin.core.tools.run_command import build_run_command_tool
+    from aldwin.core.tools.todo import build_todo_tool
     from aldwin.core.tools.web_fetch import build_web_fetch_tool
     from aldwin.core.tools.web_search import build_web_search_tool
 
@@ -207,6 +209,8 @@ def build_tools(
         *build_edit_tools(session_ctx.workspace, session_ctx.policy_session),
         *build_document_tools(session_ctx.workspace, session_ctx.policy_session),
         build_download_tool(session_ctx.workspace, session_ctx.policy_session),
+        build_todo_tool(),
+        build_calculate_tool(),
         *extra_tools,
     ]
     verify_registered_tools(raw_tools)

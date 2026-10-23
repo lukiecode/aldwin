@@ -186,6 +186,15 @@ async def test_prompt_input_bindings_empty_ignored_and_toolbar(
         format_bottom_toolbar("gpt-4o", "2026-10-18_3f2a9b1c", 6200)
         == " gpt-4o · 95% context left   ? shortcuts · esc stop "
     )
+    assert (
+        format_bottom_toolbar(
+            "gpt-4o",
+            "2026-10-18_3f2a9b1c",
+            6200,
+            todo_label="Tasks 2/5",
+        )
+        == " gpt-4o · 95% context left · Tasks 2/5   ? shortcuts · esc stop "
+    )
 
     boot = bootstrap(plain=True)
     client = FakeClient()

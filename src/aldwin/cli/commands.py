@@ -16,12 +16,13 @@ from aldwin.cli.theme import filter_canonical_models
 from aldwin.client import (
     MemorySummary,
     PersonaSummary,
+    ProtocolError,
     SkillsReport,
     ToolInfo,
     WorkspaceError,
     WorkspaceSummary,
 )
-from aldwin.protocol import DoneEvent, ErrorEvent
+from aldwin.protocol import DoneEvent, ErrorEvent, TodoUpdatedEvent
 
 SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
     ("/help", "Show commands and keyboard shortcuts"),
@@ -30,6 +31,7 @@ SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
     ("/persona", "Show current persona and file path"),
     ("/memory", "Show profile, recent notes, and index status"),
     ("/skills", "List installed skills"),
+    ("/todo", "Show the current task checklist"),
     ("/workspace", "Show or switch the workspace folder"),
     ("/verbose", "Show or hide file previews for this session"),
     ("/tools", "List built-in tools (includes recall, remember, forget)"),
@@ -70,6 +72,8 @@ class SlashCommandClient(Protocol):
     def workspace_summary(self) -> WorkspaceSummary: ...
 
     def set_workspace(self, new_root: Path | str) -> WorkspaceSummary: ...
+
+    async def todo_get(self) -> TodoUpdatedEvent: ...
 
 
 class SlashCompleter(Completer):
@@ -340,7 +344,20 @@ async def handle_slash_command(
         await client.new_conversation()
         if on_reset_tokens is not None:
             on_reset_tokens()
+        renderer.clear_todo()
         renderer.render_new_conversation_divider()
+        return False
+
+    if cmd == "/todo":
+        try:
+            from aldwin.cli.todo_view import TodoViewState
+
+            event = await client.todo_get()
+            if event.total > 0:
+                renderer.todo_view.state = TodoViewState.from_event(event)
+        except ProtocolError as exc:
+            renderer.console.print(Text(str(exc), style="warn"))
+        renderer.todo_view.print_current(renderer.console)
         return False
 
     if cmd == "/model":

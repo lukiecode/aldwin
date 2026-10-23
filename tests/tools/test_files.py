@@ -903,7 +903,7 @@ def test_tc47_registration_and_catalog(
         assert by_name[name].parallel_safe is False
     catalog = list_builtin_tools()
     assert [item.name for item in catalog].count("read_file") == 1
-    assert len(catalog) == 15
+    assert len(catalog) == 17
     for item in catalog:
         if item.name in {"list_dir", "glob", "grep", "read_file", "read_document"}:
             assert item.requires_approval is False

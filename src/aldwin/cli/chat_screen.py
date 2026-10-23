@@ -39,6 +39,7 @@ from aldwin.cli.theme import (
 )
 from aldwin.client import (
     BootstrapResult,
+    ProtocolError,
     open_in_process_client,
     pop_profile_truncation_warning,
 )
@@ -52,6 +53,7 @@ from aldwin.protocol import (
     NoticeEvent,
     StatusEvent,
     TextEvent,
+    TodoUpdatedEvent,
     ToolCallEvent,
     ToolResultEvent,
 )
@@ -124,6 +126,8 @@ class ChatClientProtocol(SlashCommandClient, Protocol):
 
     async def history(self, limit: int = 20) -> HistoryEvent: ...
 
+    async def todo_get(self) -> TodoUpdatedEvent: ...
+
     def turn(self, text: str) -> AsyncGenerator[Event, None]: ...
 
     async def stop(self) -> DoneEvent | ErrorEvent: ...
@@ -146,11 +150,13 @@ def format_bottom_toolbar(
     used_tokens: int = 0,
     *,
     width: int | None = None,
+    todo_label: str | None = None,
 ) -> str:
     """Format the bottom status line (`<model> · <N>% context left` + hints)."""
     _ = session_id
     pct = context_left_percent(model, used_tokens)
-    left = f" {model} · {pct}% context left"
+    todo_bit = f" · {todo_label}" if todo_label else ""
+    left = f" {model} · {pct}% context left{todo_bit}"
     right = "? shortcuts · esc stop "
     if width is not None and width >= len(left) + len(right) + 4:
         gap = width - len(left) - len(right)
@@ -522,6 +528,7 @@ async def _chat_loop(
     def _reset_tokens() -> None:
         nonlocal last_context_tokens
         last_context_tokens = 0
+        renderer.clear_todo()
 
     def _toolbar() -> str:
         return format_bottom_toolbar(
@@ -529,6 +536,7 @@ async def _chat_loop(
             client.session_id,
             last_context_tokens,
             width=console.width,
+            todo_label=renderer.todo_view.toolbar_label(),
         )
 
     session = build_prompt_session(
@@ -559,6 +567,14 @@ async def _chat_loop(
                 display_workspace=boot.display_workspace or None,
             )
         renderer.render_history(history_ev, updated_at=client.updated_at)
+        try:
+            from aldwin.cli.todo_view import TodoViewState
+
+            todo_ev = await client.todo_get()
+            if todo_ev.total > 0:
+                renderer.todo_view.state = TodoViewState.from_event(todo_ev)
+        except ProtocolError as exc:
+            console.print(Text(str(exc), style="warn"))
 
         profile_warn = pop_profile_truncation_warning()
         if profile_warn:
@@ -639,6 +655,9 @@ async def _chat_loop(
                     async for ev in client.turn(user_text):
                         if isinstance(ev, TextEvent):
                             turn_renderer.on_text(ev.delta)
+                        elif isinstance(ev, TodoUpdatedEvent):
+                            turn_renderer.pause_for_todo()
+                            renderer.on_todo_updated(ev)
                         elif isinstance(ev, ToolCallEvent):
                             turn_renderer.on_tool_call(ev)
                         elif isinstance(ev, ToolResultEvent):

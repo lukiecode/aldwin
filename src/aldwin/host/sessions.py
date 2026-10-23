@@ -75,6 +75,23 @@ class StoredSession:
     path: Path
     meta: SessionMeta
     memory: Memory
+    todo: list[dict[str, str]] | None = None
+
+
+def _normalise_todo_payload(raw: Any) -> list[dict[str, str]]:
+    """Parse a session `todo` value into a list of `{text, status}` dicts."""
+    if not isinstance(raw, list):
+        return []
+    items: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            return []
+        text = entry.get("text")
+        status = entry.get("status", "pending")
+        if not isinstance(text, str) or not isinstance(status, str):
+            return []
+        items.append({"text": text, "status": status})
+    return items
 
 
 class SessionStore:
@@ -114,18 +131,23 @@ class SessionStore:
         memory: Memory,
         *,
         interrupted: bool,
+        todo: list[dict[str, str]] | None = None,
     ) -> None:
         """Atomically persist `stored` and `memory` to `stored.path` (mode `0600`)."""
         stored.memory = memory
         stored.meta.updated_at = _utc_now_iso()
         stored.meta.interrupted = interrupted
+        if todo is not None:
+            stored.todo = list(todo)
         if not stored.meta.title:
             stored.meta.title = derive_session_title(memory)
 
-        payload = {
+        payload: dict[str, Any] = {
             "meta": asdict(stored.meta),
             "memory": memory.dump_json(),
         }
+        if stored.todo:
+            payload["todo"] = stored.todo
         serialized = json.dumps(payload, indent=2) + "\n"
         atomic_write(stored.path, serialized, mode=FILE_MODE)
 
@@ -181,7 +203,8 @@ class SessionStore:
                 title=str(raw_meta.get("title", "")) or derive_session_title(memory),
                 interrupted=interrupted,
             )
-            return StoredSession(path=path, meta=meta, memory=memory)
+            todo = _normalise_todo_payload(raw_obj.get("todo"))
+            return StoredSession(path=path, meta=meta, memory=memory, todo=todo or None)
         except (
             OSError,
             json.JSONDecodeError,

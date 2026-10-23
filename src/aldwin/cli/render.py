@@ -24,6 +24,7 @@ from aldwin.cli.theme import (
     format_relative_time,
     format_tokens,
 )
+from aldwin.cli.todo_view import TodoView
 from aldwin.client import sanitize_display_text
 from aldwin.protocol import (
     ApprovalAnswer,
@@ -32,6 +33,7 @@ from aldwin.protocol import (
     ErrorCode,
     ErrorEvent,
     HistoryEvent,
+    TodoUpdatedEvent,
     ToolCallEvent,
     ToolResultEvent,
 )
@@ -272,12 +274,21 @@ class ChatRenderer:
         self.console = console
         self.plain = plain
         self.verbose = False
+        self.todo_view = TodoView(plain=plain, unicode=not plain)
 
     def set_verbose(self, enabled: bool) -> None:
         """Turn file-tool previews on or off for this session and say which."""
         self.verbose = enabled
         state = "on" if enabled else "off"
         self.console.print(f"verbose: {state}")
+
+    def on_todo_updated(self, event: TodoUpdatedEvent) -> None:
+        """Redraw the session checklist from a `todo.updated` event."""
+        self.todo_view.apply_event(event, self.console)
+
+    def clear_todo(self) -> None:
+        """Clear checklist state after `/new`."""
+        self.todo_view.clear()
 
     def render_welcome(
         self,
@@ -509,6 +520,7 @@ class ChatRenderer:
         clock: Callable[[], float] = time.monotonic,
     ) -> TurnRenderer:
         """Create and start a `TurnRenderer` for a new conversation turn."""
+        self.todo_view.reset_turn()
         turn = TurnRenderer(self, clock=clock)
         turn.start()
         return turn
@@ -596,23 +608,7 @@ class TurnRenderer:
     def start(self) -> None:
         """Start the transient `Live` display and `0.5 s` refresh ticker."""
         self._started_at = self._clock()
-        if self.plain:
-            return
-        if self._live is None:
-            self._live = Live(
-                get_renderable=self._build_live_renderable,
-                console=self.console,
-                refresh_per_second=12,
-                transient=True,
-                auto_refresh=False,
-            )
-            self._live.start(refresh=True)
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None and (self._ticker_task is None or self._ticker_task.done()):
-            self._ticker_task = loop.create_task(self._run_ticker())
+        self._ensure_live()
 
     async def _run_ticker(self) -> None:
         """Refresh the live status line every 0.5 s while the turn is active."""
@@ -641,10 +637,40 @@ class TurnRenderer:
             self._live = None
 
     def close(self) -> None:
-        """Ensure the `Live` region and `0.5 s` ticker task are stopped."""
+        """Ensure turn and checklist Live regions and the ticker are stopped."""
+        self._stop_live()
+        self._chat.todo_view.freeze()
+
+    def pause_for_todo(self) -> None:
+        """Stop the turn spinner so the checklist can own the display region."""
         self._stop_live()
 
+    def _ensure_live(self) -> None:
+        """Start (or keep) the turn Live, never nesting with the checklist Live."""
+        if self.plain:
+            return
+        if self._chat.todo_view.live_active:
+            return
+        if self._live is None:
+            self._live = Live(
+                get_renderable=self._build_live_renderable,
+                console=self.console,
+                refresh_per_second=12,
+                transient=True,
+                auto_refresh=False,
+            )
+            self._live.start(refresh=True)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and (self._ticker_task is None or self._ticker_task.done()):
+            self._ticker_task = loop.create_task(self._run_ticker())
+
     def _refresh_live(self) -> None:
+        if self._chat.todo_view.live_active:
+            return
+        self._ensure_live()
         if self._live is not None and self._live.is_started:
             self._live.refresh()
 
@@ -685,6 +711,13 @@ class TurnRenderer:
     def on_tool_call(self, event: ToolCallEvent) -> None:
         """Flush buffered text, track pending `⚙` card, and update spinner."""
         self._flush_markdown_buffer()
+        if event.name == "todo":
+            # Checklist UI comes from todo.updated, not a collapsed tool row.
+            self._pending_tools[event.call_id] = (event.name, "", "")
+            self._spinner_text = "Updating tasks…"
+            self._refresh_live()
+            return
+
         display_args = format_display_args(event.args_preview, tool_name=event.name)
         summary = sanitize_display_text(event.summary.strip())
         self._pending_tools[event.call_id] = (event.name, display_args, summary)
@@ -718,6 +751,11 @@ class TurnRenderer:
             self._spinner_text = f"Running {next_tool}…"
         else:
             self._spinner_text = "Thinking…"
+
+        if tool_name == "todo":
+            # Checklist UI is driven by `todo.updated`, not this row.
+            self._refresh_live()
+            return
 
         duration = format_duration_ms(event.duration_ms)
         summary = sanitize_display_text(clean_tool_summary(tool_name, event.summary))
@@ -764,6 +802,7 @@ class TurnRenderer:
     def pause_for_approval(self, event: ApprovalEvent) -> None:
         """Stop turn `Live` and show the transient approval box."""
         self._flush_markdown_buffer()
+        self._chat.todo_view.freeze()
         self._stop_live()
         if not self.plain and self.console.is_interactive:
             self._chat.ring_bell()
@@ -810,27 +849,12 @@ class TurnRenderer:
     def resume_after_approval(self) -> None:
         """Restart `Live` after the user answers the approval prompt."""
         self._stop_approval_live()
-        if self.plain:
-            return
-        if self._live is None:
-            self._live = Live(
-                get_renderable=self._build_live_renderable,
-                console=self.console,
-                refresh_per_second=12,
-                transient=True,
-                auto_refresh=False,
-            )
-            self._live.start(refresh=True)
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is not None and (self._ticker_task is None or self._ticker_task.done()):
-            self._ticker_task = loop.create_task(self._run_ticker())
+        self._ensure_live()
 
     def finish_done(self, event: DoneEvent) -> int:
         """Stop `Live`, flush final markdown, print end line, and return tokens."""
         self._stop_live()
+        self._chat.todo_view.freeze()
         elapsed = format_elapsed_s(self.elapsed_seconds())
         tools = _tool_word(self._tool_count)
         total_tokens = (
@@ -870,4 +894,5 @@ class TurnRenderer:
         """Stop `Live`, flush partial output, and print the error line."""
         self._flush_markdown_buffer()
         self._stop_live()
+        self._chat.todo_view.freeze()
         self._chat.render_error(event.code, event.message)

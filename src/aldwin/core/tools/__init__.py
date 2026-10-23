@@ -176,6 +176,16 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
         description="Download a public URL into the workspace after y/n approval.",
         requires_approval=True,
     ),
+    ToolInfo(
+        name="todo",
+        description="Keep a checklist for multi-step jobs (3+ steps).",
+        requires_approval=False,
+    ),
+    ToolInfo(
+        name="calculate",
+        description="Exact arithmetic and ISO date maths (no shell).",
+        requires_approval=False,
+    ),
 )
 
 

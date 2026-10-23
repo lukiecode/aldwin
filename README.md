@@ -67,6 +67,7 @@ Type `/` at the prompt for autocomplete:
 | `/persona` | Show the active persona and `~/.aldwin/persona.md` character count |
 | `/memory` | Show profile, recent notes, and index status (`N notes · M conversations indexed · index <size>`) |
 | `/skills` | List installed skills in `~/.aldwin/skills/` and flag any invalid `SKILL.md` files |
+| `/todo` | Show the current multi-step task checklist for this session |
 | `/workspace` | Show the workspace folder, or switch it with `/workspace <path>` |
 | `/verbose` | Show or hide up to 12 preview lines under file-tool rows for this session |
 | `/tools` | List built-in tools and which ones require `y/n` approval |
