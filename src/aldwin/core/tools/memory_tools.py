@@ -1,4 +1,4 @@
-"""Memory tools: `remember`, `recall`, and `forget` (`ENG-429`)."""
+"""Memory tools: remember, recall, and forget."""
 
 from __future__ import annotations
 
@@ -30,9 +30,7 @@ from aldwin.core.memory_index import (
 from aldwin.core.policy import ApprovalPreview, looks_like_secret
 from aldwin.core.tools import ToolOutput
 
-MEMORY_TOOL_NAMES: Final[frozenset[str]] = frozenset(
-    {"remember", "recall", "forget"}
-)
+MEMORY_TOOL_NAMES: Final[frozenset[str]] = frozenset({"remember", "recall", "forget"})
 _SECRET_REFUSAL: Final[str] = (
     "that looks like a password, key or card number; Aldwin doesn't store secrets"
 )
@@ -457,7 +455,9 @@ class ForgetTool(Tool):
         """Ask only when exactly one note matches; otherwise raise with the message."""
         resolved = self._resolve_single(query)
         if isinstance(resolved, str):
-            # 0 or many matches: surface the list/message without asking (FR-8).
+            # Zero or many matches: return the list without asking (forget never
+            # Diff-asks then). ToolCallError carries the informational text so
+            # the model sees the ids and the "call forget with the id…" line.
             raise ToolCallError(resolved)
         return ApprovalPreview(
             summary=resolved.summary,

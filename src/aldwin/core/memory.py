@@ -1,4 +1,4 @@
-"""File-based user profile and daily notes memory for Aldwin (`ENG-381`)."""
+"""File-based user profile and daily notes memory for Aldwin."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ _MEMORY_ESCAPE_TOKENS: Final[tuple[str, ...]] = (
     "<system",
 )
 
-_DATE_STEM_RE: Final[re.Pattern[str]] = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+DATE_STEM_RE: Final[re.Pattern[str]] = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _HTML_COMMENT_RE: Final[re.Pattern[str]] = re.compile(r"<!--.*?-->", re.DOTALL)
 _TRAILING_META_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?P<body>.*?)\s*<!--\s*(?P<meta>.*?)\s*-->$"
@@ -77,7 +77,7 @@ class NoteEntry:
 
 @dataclass(frozen=True, slots=True)
 class MemorySummary:
-    """Summary of profile and recent notes used by `/memory` (`FR-10`, `FR-12`)."""
+    """Summary of profile, recent notes, and index stats for `/memory`."""
 
     profile_path: Path
     display_profile_path: str
@@ -89,6 +89,7 @@ class MemorySummary:
     indexed_notes: int = 0
     indexed_conversations: int = 0
     index_size_bytes: int = 0
+    index_size_label: str = "0 B"
 
 
 def _ensure_memory_dirs(root: Path) -> Path:
@@ -106,7 +107,7 @@ def _ensure_memory_dirs(root: Path) -> Path:
 
 @contextmanager
 def _notes_lock(root: Path) -> Iterator[None]:
-    """Acquire an exclusive `fcntl.flock` lock on `memory/.lock` (`FR-11`)."""
+    """Acquire an exclusive `fcntl.flock` lock on `memory/.lock`."""
     _ensure_memory_dirs(root)
     lock_path = root / LOCK_REL_PATH
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, FILE_MODE)
@@ -125,7 +126,7 @@ def sanitize_note_text(raw: str) -> str:
     """Sanitize a note into a single clean line with comments and markers stripped.
 
     Collapses newlines and whitespace to single spaces, strips all `<!--` and
-    `-->` markers, and strips leading `-`, `*`, `+`, `#`, `>` characters (`FR-3`).
+    `-->` markers, and strips leading `-`, `*`, `+`, `#`, `>` characters.
     """
     text = raw.replace("\r", " ").replace("\n", " ").replace("\t", " ")
 
@@ -165,13 +166,13 @@ def _warn_corrupt_line(file_path: Path, line_no: int, reason: str) -> None:
         )
 
 
-def _parse_note_line(
+def parse_note_line(
     raw_line: str,
     date_str: str,
     file_path: Path,
     line_no: int = 0,
 ) -> NoteEntry | None:
-    """Parse one line from a daily notes file (`FR-2`, `NFR Reliability`).
+    """Parse one line from a daily notes file.
 
     Returns `None` for blank lines, `# ...` headings, standalone HTML comments,
     or corrupted lines (which are logged once).
@@ -250,7 +251,7 @@ def _iter_note_files(
         if not path.is_file() or path.suffix != ".md":
             continue
         stem = path.stem
-        if not _DATE_STEM_RE.match(stem):
+        if not DATE_STEM_RE.match(stem):
             continue
         try:
             parsed_date = date.fromisoformat(stem)
@@ -276,7 +277,7 @@ def _read_notes_from_file(path: Path, date_str: str) -> list[NoteEntry]:
 
     entries: list[NoteEntry] = []
     for idx, line in enumerate(raw.splitlines(), start=1):
-        entry = _parse_note_line(line, date_str, path, line_no=idx)
+        entry = parse_note_line(line, date_str, path, line_no=idx)
         if entry is not None:
             entries.append(entry)
     return entries
@@ -317,9 +318,9 @@ def remember_note(
     session_id: str = "default",
     now: datetime | None = None,
 ) -> str:
-    """Validate and append one note line to today's notes file (`FR-3`).
+    """Validate and append one note line to today's notes file.
 
-    Raises `ValueError` if `text` is empty or exceeds 300 characters. Returns
+    Raises `ValueError` if `text` is empty or exceeds `MAX_NOTE_CHARS`. Returns
     `"already remembered"` if a normalised duplicate exists in the last 7 days,
     or `"saved"` when written.
     """
@@ -394,7 +395,7 @@ def recall_notes(
     *,
     today: date | None = None,
 ) -> str:
-    """Search notes via the FTS5 index (`ENG-429`); falls back if unavailable."""
+    """Search notes via the FTS5 index; falls back if unavailable."""
     if not isinstance(query, str):
         return 'nothing matches ""'
     root = (home if home is not None else home_dir()).expanduser().resolve()
@@ -417,7 +418,7 @@ def _strip_html_comments(text: str) -> str:
 
 
 def escape_memory_text(text: str) -> str:
-    """Neutralise tags that could close the system `<memory>` block (`FR-10`)."""
+    """Neutralise tags that could close the system `<memory>` block."""
     out = text
     for token in _MEMORY_ESCAPE_TOKENS:
         if token in out:
@@ -442,7 +443,7 @@ def find_note_by_id(
         except OSError:
             continue
         for idx, raw in enumerate(raw_lines):
-            entry = _parse_note_line(
+            entry = parse_note_line(
                 raw.rstrip("\n\r"),
                 date_str,
                 path,
@@ -514,7 +515,7 @@ def delete_note_by_id(home: Path | None, note_id: str) -> str:
         still_has_note = False
         date_str = path.stem
         for idx, raw in enumerate(remaining.splitlines(), start=1):
-            if _parse_note_line(raw, date_str, path, line_no=idx) is not None:
+            if parse_note_line(raw, date_str, path, line_no=idx) is not None:
                 still_has_note = True
                 break
         if not still_has_note:
@@ -528,7 +529,7 @@ def read_profile(
     home: Path | None = None,
     cap: int = 4000,
 ) -> tuple[str, bool]:
-    """Read `memory/profile.md`, strip comments, and cap in prompt (`FR-6`)."""
+    """Read `memory/profile.md`, strip comments, and cap in prompt."""
     root = (home if home is not None else home_dir()).expanduser().resolve()
     profile_path = root / PROFILE_REL_PATH
     if not profile_path.is_file():
@@ -571,7 +572,7 @@ def memory_block(
     *,
     today: date | None = None,
 ) -> str:
-    """Build the `<memory>` block injected into the system prompt (`FR-5`, `FR-6`)."""
+    """Build the `<memory>` block injected into the system prompt."""
     root = (home if home is not None else home_dir()).expanduser().resolve()
     active_limits = limits if limits is not None else LimitsConfig()
 
@@ -617,7 +618,7 @@ def memory_summary(
     *,
     today: date | None = None,
 ) -> MemorySummary:
-    """Return profile and notes summary data for `/memory` (`FR-10`)."""
+    """Return profile and notes summary data for `/memory`."""
     root = (home if home is not None else home_dir()).expanduser().resolve()
     active_limits = limits if limits is not None else LimitsConfig()
     profile_path = root / PROFILE_REL_PATH
@@ -653,13 +654,15 @@ def memory_summary(
     indexed_conversations = 0
     index_size_bytes = 0
     try:
-        from aldwin.core.memory_index import default_memory_index
+        from aldwin.core.memory_index import default_memory_index, format_index_size
 
         idx = default_memory_index(root)
         idx.sync()
         indexed_notes, indexed_conversations, index_size_bytes = idx.stats()
+        index_size_label = format_index_size(index_size_bytes)
     except Exception:
         logger.debug("Could not read memory index stats", exc_info=True)
+        index_size_label = "0 B"
 
     return MemorySummary(
         profile_path=profile_path,
@@ -672,4 +675,5 @@ def memory_summary(
         indexed_notes=indexed_notes,
         indexed_conversations=indexed_conversations,
         index_size_bytes=index_size_bytes,
+        index_size_label=index_size_label,
     )

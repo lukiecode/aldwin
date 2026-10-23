@@ -1,4 +1,4 @@
-"""Tool/policy tests for remember, recall, and forget (`ENG-429`)."""
+"""Tool/policy tests for remember, recall, and forget."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import pytest
 from agentling.tools import ToolCallError
 
 from aldwin.core.home import FILE_MODE, atomic_write, ensure_home
-from aldwin.core.memory import find_note_by_id, remember_note
+from aldwin.core.memory import remember_note
 from aldwin.core.memory_index import default_memory_index
 from aldwin.core.policy import (
     REGISTRY,
@@ -19,9 +19,7 @@ from aldwin.core.policy import (
     wrap_tools_with_policy,
 )
 from aldwin.core.tools.memory_tools import (
-    ForgetTool,
     RecallTool,
-    RememberTool,
     build_memory_tools,
     running_summary,
 )
@@ -130,9 +128,7 @@ async def test_replace_happy_and_missing(
     assert "12 Elm Road" not in note_file.read_text(encoding="utf-8")
 
     with pytest.raises(ToolCallError, match="no note with id n-0000"):
-        await tools["remember"].call(
-            {"text": "x", "replace": "n-0000"}
-        )
+        await tools["remember"].call({"text": "x", "replace": "n-0000"})
 
 
 async def test_replace_deny(aldwin_home: Path, workspace: Workspace) -> None:
@@ -174,8 +170,15 @@ async def test_forget_one_yes_and_three_matches(
         "- gym three <!-- id=m_gym000000003 at=t src=s -->\n",
         mode=FILE_MODE,
     )
-    with pytest.raises(ToolCallError, match="several notes match"):
+    with pytest.raises(ToolCallError) as multi:
         await tools["forget"].call({"query": "gym"})
+    multi_text = str(multi.value)
+    assert "several notes match; call forget with the id of the one to remove" in (
+        multi_text
+    )
+    assert "m_gym000000001" in multi_text
+    assert "m_gym000000002" in multi_text
+    assert "m_gym000000003" in multi_text
     assert (notes / f"{day}.md").exists()
 
 
@@ -208,9 +211,12 @@ async def test_scope_replace_does_not_touch_profile(
     profile = aldwin_home / "memory" / "profile.md"
     profile_before = profile.read_bytes()
     remember_note(aldwin_home, "fact one")
-    note_id = next((aldwin_home / "memory" / "notes").glob("*.md")).read_text(
-        encoding="utf-8"
-    ).split("id=")[1].split()[0]
+    note_id = (
+        next((aldwin_home / "memory" / "notes").glob("*.md"))
+        .read_text(encoding="utf-8")
+        .split("id=")[1]
+        .split()[0]
+    )
     tools = _wrap(aldwin_home, workspace, ask=_ask_yes)
     await tools["remember"].call({"text": "fact two", "replace": note_id})
     await tools["forget"].call({"query": note_id})

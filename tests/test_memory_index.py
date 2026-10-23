@@ -1,4 +1,4 @@
-"""Tests for `aldwin.core.memory_index` (`ENG-429`)."""
+"""Tests for `aldwin.core.memory_index`."""
 
 from __future__ import annotations
 
@@ -83,7 +83,9 @@ def test_open_creates_index_0600_and_user_version_1(tmp_path: Path) -> None:
         conn.close()
 
 
-def test_corrupt_index_rebuilds(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+def test_corrupt_index_rebuilds(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     idx = _index(tmp_path)
     _write_note(
         idx.notes_dir,
@@ -127,6 +129,43 @@ def test_day_window_widens_with_prefix(tmp_path: Path) -> None:
     result = idx.search("insurance", days=30)
     assert result.startswith("(no matches in the last 30 days; showing older)")
     assert "insurance renews" in result
+
+
+def test_both_scope_does_not_widen_when_conversations_hit(tmp_path: Path) -> None:
+    """In-window conversation hits must not pull in older notes or the widen banner."""
+    idx = _index(tmp_path)
+    today = date.today()
+    old_day = (today - timedelta(days=40)).isoformat()
+    recent_day = today.isoformat()
+    _write_note(
+        idx.notes_dir,
+        old_day,
+        ["- flat deposit paid last year <!-- id=m_oldflat00001 at=t src=s -->"],
+    )
+    _write_session(
+        idx.sessions_dir,
+        f"{recent_day}_abc",
+        updated_at=f"{recent_day}T12:00:00+00:00",
+        steps=[
+            {"type": "task", "data": {"task": "what about the flat"}},
+            {
+                "type": "action",
+                "data": {
+                    "model_message": {
+                        "role": "assistant",
+                        "content": "we chose the flat in Chelmsford",
+                    },
+                    "tool_results": [],
+                },
+            },
+            {"type": "final", "data": {"answer": "Chelmsford flat"}},
+        ],
+    )
+    idx.sync()
+    result = idx.search("flat", scope="both", days=30)
+    assert "(no matches in the last" not in result
+    assert "chose the flat" in result
+    assert "deposit paid" not in result
 
 
 def test_conversation_scope_indexes_assistant_not_tools(tmp_path: Path) -> None:

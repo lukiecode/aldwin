@@ -32,7 +32,7 @@ SLASH_COMMANDS: Final[tuple[tuple[str, str], ...]] = (
     ("/skills", "List installed skills"),
     ("/workspace", "Show or switch the workspace folder"),
     ("/verbose", "Show or hide file previews for this session"),
-    ("/tools", "List built-in tools"),
+    ("/tools", "List built-in tools (includes recall, remember, forget)"),
     ("/exit", "Save and exit Aldwin"),
 )
 
@@ -240,13 +240,7 @@ def _render_memory(client: SlashCommandClient, renderer: ChatRenderer) -> None:
     else:
         console.print(Text("  (no recent notes)", style="muted"))
 
-    index_size = getattr(mem, "index_size_bytes", 0) or 0
-    if index_size < 1024:
-        size_label = f"{index_size} B"
-    elif index_size < 1024 * 1024:
-        size_label = f"{index_size / 1024:.1f} KB"
-    else:
-        size_label = f"{index_size / (1024 * 1024):.1f} MB"
+    size_label = getattr(mem, "index_size_label", None) or "0 B"
     console.print(
         Text(
             f"{getattr(mem, 'indexed_notes', 0)} notes · "

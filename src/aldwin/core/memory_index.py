@@ -1,4 +1,4 @@
-"""Rebuildable SQLite FTS5 index over memory notes and saved sessions (`ENG-429`)."""
+"""Rebuildable SQLite FTS5 index over memory notes and saved sessions."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ from typing import Final, Literal
 
 from aldwin.core.home import FILE_MODE
 from aldwin.core.memory import (
-    _DATE_STEM_RE,
+    DATE_STEM_RE,
     DEFAULT_RECALL_DAYS,
-    _parse_note_line,
+    parse_note_line,
 )
 
 logger = logging.getLogger("aldwin.core.memory_index")
@@ -180,38 +180,29 @@ class MemoryIndex:
 
     def sync(self) -> None:
         """Re-index notes and session files whose mtime or size changed."""
-        try:
-            conn = self._connect()
-        except sqlite3.DatabaseError:
-            logger.warning("Could not open memory index for sync")
-            return
-        try:
-            self._sync_notes(conn)
-            self._sync_sessions(conn)
-            conn.commit()
-        except sqlite3.DatabaseError:
-            logger.info("Memory index rebuilt")
-            conn.close()
-            self._unlink_index()
+        for attempt in range(2):
             try:
                 conn = self._connect()
+            except sqlite3.DatabaseError:
+                if attempt == 0:
+                    self._unlink_index()
+                    continue
+                logger.warning("Could not open memory index for sync")
+                return
+            try:
                 self._sync_notes(conn)
                 self._sync_sessions(conn)
                 conn.commit()
-            except sqlite3.DatabaseError:
-                logger.warning("Memory index sync failed after rebuild")
                 return
+            except sqlite3.DatabaseError:
+                logger.info("Memory index rebuilt")
+                self._unlink_index()
             finally:
                 try:
                     conn.close()
-                except Exception:
-                    pass
-            return
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+                except sqlite3.Error:
+                    logger.debug("Error closing memory index", exc_info=True)
+        logger.warning("Memory index sync failed after rebuild")
 
     def _tracked_files(self, conn: sqlite3.Connection) -> dict[str, tuple[int, int]]:
         rows = conn.execute("SELECT path, mtime_ns, size FROM files").fetchall()
@@ -237,10 +228,7 @@ class MemoryIndex:
     ) -> None:
         key = str(path)
         if kind == "notes":
-            if self.fts5_available():
-                conn.execute("DELETE FROM notes WHERE file = ?", (key,))
-            else:
-                conn.execute("DELETE FROM notes WHERE file = ?", (key,))
+            conn.execute("DELETE FROM notes WHERE file = ?", (key,))
         else:
             session_id = path.stem
             conn.execute("DELETE FROM turns WHERE session_id = ?", (session_id,))
@@ -251,7 +239,7 @@ class MemoryIndex:
         present: set[str] = set()
         if self.notes_dir.is_dir():
             for path in sorted(self.notes_dir.glob("*.md")):
-                if not path.is_file() or not _DATE_STEM_RE.match(path.stem):
+                if not path.is_file() or not DATE_STEM_RE.match(path.stem):
                     continue
                 key = str(path)
                 present.add(key)
@@ -283,7 +271,7 @@ class MemoryIndex:
             return
         seen_ids: set[str] = set()
         for idx, line in enumerate(raw.splitlines(), start=1):
-            entry = _parse_note_line(line, day, path, line_no=idx)
+            entry = parse_note_line(line, day, path, line_no=idx)
             if entry is None:
                 continue
             note_id = entry.note_id or synthetic_note_id(path, entry.text)
@@ -492,32 +480,16 @@ class MemoryIndex:
 
             if scope in ("notes", "both"):
                 note_lines = self._search_notes_fts(conn, fts_q, min_day=min_day)
-                if not note_lines and scope == "notes":
-                    note_lines = self._search_notes_fts(conn, fts_q, min_day=None)
-                    widened = bool(note_lines)
-                elif not note_lines and scope == "both":
-                    # Try notes over all time only if conversations also empty later.
-                    pass
-
             if scope in ("conversations", "both"):
                 turn_lines = self._search_turns_fts(conn, fts_q, min_day=min_day)
 
-            if scope == "both" and not note_lines and not turn_lines:
-                note_lines = self._search_notes_fts(conn, fts_q, min_day=None)
-                turn_lines = self._search_turns_fts(conn, fts_q, min_day=None)
+            # Widen over all time only when the day window returned nothing.
+            if not note_lines and not turn_lines:
+                if scope in ("notes", "both"):
+                    note_lines = self._search_notes_fts(conn, fts_q, min_day=None)
+                if scope in ("conversations", "both"):
+                    turn_lines = self._search_turns_fts(conn, fts_q, min_day=None)
                 widened = bool(note_lines or turn_lines)
-            elif scope == "conversations" and not turn_lines:
-                turn_lines = self._search_turns_fts(conn, fts_q, min_day=None)
-                widened = bool(turn_lines)
-            elif scope == "both" and not note_lines and turn_lines:
-                older_notes = self._search_notes_fts(conn, fts_q, min_day=None)
-                if older_notes:
-                    note_lines = older_notes
-                    widened = True
-            elif scope == "both" and note_lines and not turn_lines:
-                older_turns = self._search_turns_fts(conn, fts_q, min_day=None)
-                # Only widen when *nothing* matched in the window.
-                del older_turns
 
             if not note_lines and not turn_lines:
                 return f'nothing matches "{trimmed}"'
@@ -575,9 +547,7 @@ class MemoryIndex:
                 "FROM turns WHERE turns MATCH ? "
                 "ORDER BY rank, day DESC LIMIT ?"
             )
-            rows = conn.execute(
-                sql, (SNIPPET_TOKENS, fts_q, MAX_TURN_HITS)
-            ).fetchall()
+            rows = conn.execute(sql, (SNIPPET_TOKENS, fts_q, MAX_TURN_HITS)).fetchall()
         else:
             sql = (
                 "SELECT snippet(turns, 0, '', '', '…', ?) AS snip, "
