@@ -142,6 +142,46 @@ async def test_slash_unknown_command() -> None:
     assert "Unknown command. Type /help." in console.export_text()
 
 
+async def test_slash_todo_prints_list_or_empty() -> None:
+    """`/todo` reprints the checklist or the empty-session message."""
+    from aldwin.protocol import TodoItem, TodoUpdatedEvent
+
+    client = FakeClient()
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+
+    await handle_slash_command(
+        "/todo",
+        client=client,
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    assert "No task list in this session" in console.export_text()
+    assert ("todo.get",) in client.requests
+
+    client.todo_event = TodoUpdatedEvent(
+        re="req_todo",
+        items=[
+            TodoItem(text="List downloads", status="done"),
+            TodoItem(text="Rename invoices", status="in_progress"),
+        ],
+        done=1,
+        total=2,
+    )
+    await handle_slash_command(
+        "/todo",
+        client=client,
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    text = console.export_text()
+    assert "Tasks 1/2" in text
+    assert "List downloads" in text
+    assert "Rename invoices" in text
+    assert "/todo" in Path("README.md").read_text(encoding="utf-8")
+
+
 async def test_slash_completer_and_inspect_commands() -> None:
     """SlashCompleter yields commands with meta; inspect commands render."""
     completer = SlashCompleter()

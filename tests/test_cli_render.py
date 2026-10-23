@@ -31,6 +31,8 @@ from aldwin.protocol import (
     ErrorEvent,
     HistoryEvent,
     HistoryItem,
+    TodoItem,
+    TodoUpdatedEvent,
     TokenUsage,
     ToolCallEvent,
     ToolResultEvent,
@@ -853,3 +855,44 @@ def test_tool_rows_strip_terminal_controls() -> None:
     assert "\x1b" not in shown
     assert "Read a.txt" in shown
     assert "row" in shown
+
+
+def test_todo_tool_skips_collapsed_row_and_freezes_live_on_done() -> None:
+    """`todo` has no ⚙/✓ tool row; turn end freezes any checklist Live."""
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+    turn = renderer.start_turn(clock=lambda: 0.0)
+
+    turn.on_tool_call(
+        ToolCallEvent(re="r1", call_id="c1", name="todo", args_preview="…"),
+    )
+    renderer.on_todo_updated(
+        TodoUpdatedEvent(
+            re="r1",
+            items=[
+                TodoItem(text="List downloads", status="in_progress"),
+                TodoItem(text="Rename invoices", status="pending"),
+            ],
+            done=0,
+            total=2,
+        )
+    )
+    turn.on_tool_result(
+        ToolResultEvent(
+            re="r1",
+            call_id="c1",
+            ok=True,
+            summary="Tasks 0/2",
+            duration_ms=3,
+        )
+    )
+    turn.finish_done(DoneEvent(re="r1", reason="answered"))
+
+    text = console.export_text()
+    assert "⚙ todo" not in text
+    assert "✓ todo" not in text
+    assert "Tasks 0/2" in text
+    assert "List downloads" in text
+    assert renderer.todo_view.live_active is False
+    assert renderer.todo_view.toolbar_label() == "Tasks 0/2"

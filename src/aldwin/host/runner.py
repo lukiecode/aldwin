@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, cast
 from uuid import uuid4
 
 from agentling import (
@@ -29,6 +29,7 @@ from agentling import (
 )
 from agentling.memory import FinalStep
 from agentling.models import Usage
+from agentling.tools import ToolCallError
 
 from aldwin.core.agent import (
     AnyAskFn,
@@ -58,6 +59,7 @@ from aldwin.core.tools import edits as edit_tools
 from aldwin.core.tools.files import row_summary as file_row_summary
 from aldwin.core.tools.files import running_summary as file_running_summary
 from aldwin.core.tools.memory_tools import running_summary as memory_running_summary
+from aldwin.core.tools.todo import todo_counts, validate_todo_items
 from aldwin.core.workspace import Workspace, format_outside_display
 from aldwin.host.in_process import InProcessTransport, WorkspaceSummary
 from aldwin.host.sessions import (
@@ -90,6 +92,8 @@ from aldwin.protocol import (
     StopRequest,
     TextEvent,
     TodoGetRequest,
+    TodoItem,
+    TodoStatus,
     TodoUpdatedEvent,
     TokenUsage,
     ToolCallEvent,
@@ -525,6 +529,7 @@ class AldwinHost:
         self._circuit_breaker_tripped: bool = False
         self._turn_task: asyncio.Task[None] | None = None
         self._serve_task: asyncio.Task[None] | None = None
+        self._todo: list[dict[str, str]] = list(self._stored_session.todo or [])
 
         self._approvals = ApprovalBroker(
             self._transport.send_event,
@@ -537,6 +542,28 @@ class AldwinHost:
         )
 
         self._transport.set_new_conversation_handler(self.new_conversation)
+
+    def _todo_event(self, re_id: str) -> TodoUpdatedEvent:
+        """Build a `todo.updated` event from the current host todo list."""
+        done, total = todo_counts(self._todo)
+        return TodoUpdatedEvent(
+            re=re_id,
+            items=[
+                TodoItem(text=i["text"], status=cast(TodoStatus, i["status"]))
+                for i in self._todo
+            ],
+            done=done,
+            total=total,
+        )
+
+    def _persist_session(self, *, interrupted: bool) -> None:
+        """Save the active session memory and todo list."""
+        self._session_store.save(
+            self._stored_session,
+            self._agent_session.memory,
+            interrupted=interrupted,
+            todo=self._todo,
+        )
 
     def _on_circuit_breaker(self) -> None:
         """Interrupt `AgentSession` after 3 declined actions in one turn."""
@@ -695,12 +722,9 @@ class AldwinHost:
             self._turn_task.cancel()
             await asyncio.gather(self._turn_task, return_exceptions=True)
 
-        self._session_store.save(
-            self._stored_session,
-            self._agent_session.memory,
-            interrupted=False,
-        )
+        self._persist_session(interrupted=False)
         self._policy_session.reset_turn()
+        self._todo = []
         self._stored_session = self._session_store.create_new(model=self._model)
         self._agent_session = new_session(self._agent)
 
@@ -768,7 +792,7 @@ class AldwinHost:
                 await scope.emit(SkillsEvent(re=req.id, items=[]))
                 await scope.done("ok")
             elif isinstance(req, TodoGetRequest):
-                await scope.emit(TodoUpdatedEvent(re=req.id, items=[], done=0, total=0))
+                await scope.emit(self._todo_event(req.id))
                 await scope.done("ok")
 
     async def _handle_hello(self, scope: RequestScope, req: HelloRequest) -> None:
@@ -869,11 +893,7 @@ class AldwinHost:
 
         self._agent = self._build_and_attach_agent(self._model)
         self._agent_session = switch_session_model(self._agent_session, self._agent)
-        self._session_store.save(
-            self._stored_session,
-            self._agent_session.memory,
-            interrupted=self._stored_session.meta.interrupted,
-        )
+        self._persist_session(interrupted=self._stored_session.meta.interrupted)
         await scope.done("ok")
 
     async def _run_turn(self, scope: RequestScope, req: TurnRequest) -> None:
@@ -888,6 +908,7 @@ class AldwinHost:
             streamed_before_tools: str = ""
             tool_start_times: dict[str, float] = {}
             tool_running: dict[str, str] = {}
+            todo_call_items: dict[str, Any] = {}
             final_status: str = "completed"
             final_usage: Usage | None = None
 
@@ -899,11 +920,7 @@ class AldwinHost:
                 ):
                     if isinstance(ev, TextDelta):
                         if not step_text_chunks:
-                            self._session_store.save(
-                                self._stored_session,
-                                self._agent_session.memory,
-                                interrupted=True,
-                            )
+                            self._persist_session(interrupted=True)
                         step_text_chunks.append(ev.text)
                         await scope.emit(TextEvent(re=req.id, delta=ev.text))
                     elif isinstance(ev, AgentlingToolCallEvent):
@@ -911,11 +928,7 @@ class AldwinHost:
                             streamed_before_tools = "".join(step_text_chunks)
                             step_text_chunks.clear()
                         call = ev.tool_call
-                        self._session_store.save(
-                            self._stored_session,
-                            self._agent_session.memory,
-                            interrupted=True,
-                        )
+                        self._persist_session(interrupted=True)
                         if call.name == "final_answer":
                             continue
                         self._policy_session.enqueue_step_call(
@@ -924,6 +937,8 @@ class AldwinHost:
                             call.arguments,
                         )
                         tool_start_times[call.id] = time.monotonic()
+                        if call.name == "todo":
+                            todo_call_items[call.id] = call.arguments.get("items")
                         running = (
                             edit_tools.running_summary(
                                 call.name,
@@ -1005,6 +1020,17 @@ class AldwinHost:
                         preview = ""
                         if ok:
                             preview = preview_lines(str(res.content))
+                        if res.name == "todo" and ok:
+                            raw_items = todo_call_items.pop(res.tool_call_id, None)
+                            try:
+                                self._todo = validate_todo_items(raw_items)
+                            except ToolCallError:
+                                pass
+                            else:
+                                self._persist_session(interrupted=True)
+                                await scope.emit(self._todo_event(req.id))
+                        else:
+                            todo_call_items.pop(res.tool_call_id, None)
                         await scope.emit(
                             ToolResultEvent(
                                 re=req.id,
@@ -1019,22 +1045,14 @@ class AldwinHost:
                         step_text_chunks.clear()
                         streamed_before_tools = ""
                         self._policy_session.clear_step_calls()
-                        self._session_store.save(
-                            self._stored_session,
-                            self._agent_session.memory,
-                            interrupted=True,
-                        )
+                        self._persist_session(interrupted=True)
                     elif isinstance(ev, FinalEvent):
                         final_status = ev.status
                         final_usage = ev.usage
 
                 if final_status == "interrupted":
                     self._flush_partial_text(step_text_chunks)
-                    self._session_store.save(
-                        self._stored_session,
-                        self._agent_session.memory,
-                        interrupted=False,
-                    )
+                    self._persist_session(interrupted=False)
                     if self._circuit_breaker_tripped and self._negotiated_version >= 2:
                         await scope.emit(
                             NoticeEvent(
@@ -1048,11 +1066,7 @@ class AldwinHost:
                 reason: DoneReason = (
                     "max_steps" if final_status == "max_steps" else "answered"
                 )
-                self._session_store.save(
-                    self._stored_session,
-                    self._agent_session.memory,
-                    interrupted=False,
-                )
+                self._persist_session(interrupted=False)
                 await scope.done(reason, usage=_to_token_usage(final_usage))
 
             except asyncio.CancelledError:
@@ -1060,11 +1074,7 @@ class AldwinHost:
                 self._agent_session._interrupt.clear()
                 self._policy_session.clear_step_calls()
                 self._flush_partial_text(step_text_chunks)
-                self._session_store.save(
-                    self._stored_session,
-                    self._agent_session.memory,
-                    interrupted=False,
-                )
+                self._persist_session(interrupted=False)
                 if not scope.terminated:
                     await scope.done("stopped")
                 raise
@@ -1073,11 +1083,7 @@ class AldwinHost:
                 self._agent_session._interrupt.clear()
                 self._policy_session.clear_step_calls()
                 logger.exception("Turn %s failed", req.id)
-                self._session_store.save(
-                    self._stored_session,
-                    self._agent_session.memory,
-                    interrupted=True,
-                )
+                self._persist_session(interrupted=True)
                 code, msg = classify_turn_error(exc)
                 if not scope.terminated:
                     await scope.error(code, msg)

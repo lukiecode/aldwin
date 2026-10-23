@@ -208,7 +208,7 @@ REGISTRY: Final[dict[str, ToolPolicy]] = {
         path_args=(),
         writes=False,
         never_grant=None,
-        parallel_safe=True,
+        parallel_safe=False,
     ),
     "calculate": ToolPolicy(
         name="calculate",

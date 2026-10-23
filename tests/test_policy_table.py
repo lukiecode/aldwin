@@ -30,7 +30,7 @@ PINNED_POLICY_TABLE: dict[
     "web_fetch": ("auto", (), False, None, True),
     "recall": ("auto", (), False, None, True),
     "remember": ("callable:remember_tier", (), False, "memory edits", False),
-    "todo": ("auto", (), False, None, True),
+    "todo": ("auto", (), False, None, False),
     "calculate": ("auto", (), False, None, True),
     "list_dir": ("auto", ("path",), False, None, True),
     "glob": ("auto", ("path",), False, None, True),

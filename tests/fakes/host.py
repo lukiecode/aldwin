@@ -23,6 +23,7 @@ from aldwin.protocol import (
     ErrorEvent,
     Event,
     HistoryEvent,
+    TodoUpdatedEvent,
 )
 
 
@@ -58,6 +59,7 @@ class FakeHost:
         self.stop_calls = 0
         self.model_switches: list[str] = []
         self.new_conversations = 0
+        self.todo_event = TodoUpdatedEvent(re="req_todo", items=[], done=0, total=0)
         self.requests: list[tuple[object, ...]] = []
         self.custom_workspace = WorkspaceSummary(
             root=Path("/tmp/ws"),
@@ -213,6 +215,11 @@ class FakeHost:
         self.new_conversations += 1
         self.requests.append(("new_conversation",))
         self.session_id = f"2026-10-18_new{self.new_conversations:02d}"
+        self.todo_event = TodoUpdatedEvent(re="req_todo", items=[], done=0, total=0)
+
+    async def todo_get(self) -> TodoUpdatedEvent:
+        self.requests.append(("todo.get",))
+        return self.todo_event
 
     async def list_models(self) -> list[str]:
         return list(self.available_models)

@@ -56,6 +56,8 @@ from aldwin.protocol import (
     Request,
     SetModelRequest,
     StopRequest,
+    TodoGetRequest,
+    TodoUpdatedEvent,
     TurnRequest,
 )
 
@@ -251,6 +253,30 @@ class AldwinClient:
                     if history_event is None:
                         return HistoryEvent(re=request.id)
                     return history_event
+        finally:
+            self._queues.pop(request.id, None)
+
+    async def todo_get(self) -> TodoUpdatedEvent:
+        """Fetch the current session todo list from the host."""
+        self._ensure_reader()
+        request = TodoGetRequest()
+        queue: asyncio.Queue[Event | None] = asyncio.Queue()
+        self._queues[request.id] = queue
+        todo_event: TodoUpdatedEvent | None = None
+        try:
+            await self._transport.send(request)
+            while True:
+                event = await queue.get()
+                if event is None:
+                    raise ProtocolError("Transport closed before `todo.get` completed.")
+                if isinstance(event, TodoUpdatedEvent):
+                    todo_event = event
+                elif isinstance(event, ErrorEvent):
+                    raise ProtocolError(event.message, code=event.code)
+                elif isinstance(event, DoneEvent):
+                    if todo_event is None:
+                        return TodoUpdatedEvent(re=request.id)
+                    return todo_event
         finally:
             self._queues.pop(request.id, None)
 
