@@ -1461,7 +1461,7 @@ class PolicyWrappedTool(Tool):
             preview = prepare_fn(**arguments)
             if inspect.isawaitable(preview):
                 preview = await preview
-            return preview  # type: ignore[no-any-return]
+            return preview
 
         mtime_ns = (
             primary_path.stat().st_mtime_ns

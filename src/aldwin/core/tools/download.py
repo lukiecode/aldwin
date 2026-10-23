@@ -372,9 +372,7 @@ class DownloadFileTool(Tool):
 
         final_host = _host_of(final_url)
         size_label = format_size(size) if size is not None else "unknown size"
-        summary = (
-            f"Download {filename} ({size_label}) from {final_host} to {display}?"
-        )
+        summary = f"Download {filename} ({size_label}) from {final_host} to {display}?"
         if first_host and final_host and first_host != final_host:
             summary = (
                 f"Download {filename} ({size_label}) from {final_host} "
@@ -408,9 +406,7 @@ class DownloadFileTool(Tool):
     ) -> ApprovalPreview:
         """Probe the URL, pick dest, and build the Ask summary (no write)."""
         plan = await self._plan(url, dest)
-        mtime_ns = (
-            plan.target.stat().st_mtime_ns if plan.target.exists() else None
-        )
+        mtime_ns = plan.target.stat().st_mtime_ns if plan.target.exists() else None
         return ApprovalPreview(
             summary=plan.summary,
             detail=plan.detail,
@@ -562,9 +558,7 @@ class DownloadFileTool(Tool):
         except TimeoutError as exc:
             if target.exists():
                 target.unlink(missing_ok=True)
-            raise ToolCallError(
-                f"timed out after {int(self._timeout)}s"
-            ) from exc
+            raise ToolCallError(f"timed out after {int(self._timeout)}s") from exc
         except UnsafeUrlError as exc:
             raise ToolCallError(_blocked_private_message(exc)) from exc
         except FetchError as exc:

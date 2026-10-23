@@ -124,9 +124,7 @@ async def test_redirect_to_link_local(download: SimpleNamespace) -> None:
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         tool = download.wrap(client)
-        msg = await _call_fail(
-            tool, {"url": "https://public.example/a.pdf"}
-        )
+        msg = await _call_fail(tool, {"url": "https://public.example/a.pdf"})
     assert "blocked: private address" in msg
     assert not list(download.root.rglob("*.aldwin-tmp"))
     assert not (download.root / "downloads" / "a.pdf").exists()

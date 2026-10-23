@@ -199,7 +199,7 @@ async def test_forged_untrusted_tag_in_pdf_is_escaped(docs: SimpleNamespace) -> 
     assert "&lt;/untrusted" in text
     body = _inner(text)
     assert re.search(r'</untrusted id="u-0000">', body) is None
-    assert 'u-0000' in body or "forged close" in body
+    assert "u-0000" in body or "forged close" in body
 
 
 async def test_document_too_large(
@@ -270,24 +270,18 @@ async def test_pdf_page_footer_when_truncated(
     assert "not shown; call again with pages=" in body
 
 
-async def test_outside_document_ask_once(
-    docs: SimpleNamespace, tmp_path: Path
-) -> None:
+async def test_outside_document_ask_once(docs: SimpleNamespace, tmp_path: Path) -> None:
     """Outside-workspace PDF asks once; yes_session skips the second ask."""
     outside = tmp_path / "outside"
     outside.mkdir()
     shutil.copy(FIXTURES / "bill.pdf", outside / "bill.pdf")
     docs.answer["answer"] = ApprovalAnswer("yes_session", "user")
-    result = await docs.tools["read_document"].call(
-        {"path": str(outside / "bill.pdf")}
-    )
+    result = await docs.tools["read_document"].call({"path": str(outside / "bill.pdf")})
     assert result.ok is True
     assert len(docs.asks) == 1
     docs.asks.clear()
     docs.answer["answer"] = ApprovalAnswer("yes", "user")
-    again = await docs.tools["read_document"].call(
-        {"path": str(outside / "bill.pdf")}
-    )
+    again = await docs.tools["read_document"].call({"path": str(outside / "bill.pdf")})
     assert again.ok is True
     assert docs.asks == []
 
@@ -378,5 +372,7 @@ def test_running_summary_read_document(docs: SimpleNamespace) -> None:
 
 def test_markitdown_not_a_dependency() -> None:
     """Spike outcome: MarkItDown is not installed."""
+    import importlib
+
     with pytest.raises(ImportError):
-        import markitdown  # noqa: F401
+        importlib.import_module("markitdown")

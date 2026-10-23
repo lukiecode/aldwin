@@ -104,8 +104,6 @@ async def test_host_rows_read_then_download(
         c.name == "download_file" and c.summary.startswith("Download ") for c in calls
     )
     assert any(r.summary.startswith("Read bill.pdf · pages ") for r in results if r.ok)
-    assert any(
-        r.summary.startswith("Download report.pdf · ") for r in results if r.ok
-    )
+    assert any(r.summary.startswith("Download report.pdf · ") for r in results if r.ok)
     assert any(a.tool == "download_file" and a.grantable is False for a in approvals)
     assert (root / "downloads" / "report.pdf").exists()

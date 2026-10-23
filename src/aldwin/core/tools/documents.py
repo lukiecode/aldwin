@@ -373,9 +373,7 @@ def convert_document(
         )
     size = path.stat().st_size
     if size > MAX_DOCUMENT_BYTES:
-        raise ToolCallError(
-            f"too large: {format_size(size)} (limit 50 MB)"
-        )
+        raise ToolCallError(f"too large: {format_size(size)} (limit 50 MB)")
     if ext == ".pdf":
         return _extract_pdf_pages(path, pages_spec=pages, cancel=cancel)
     if ext == ".docx":
@@ -388,9 +386,7 @@ def convert_document(
         return _read_csv(path, delimiter="\t" if ext == ".tsv" else None)
     if ext in {".html", ".htm"}:
         return _read_html(path)
-    raise ToolCallError(
-        f"unsupported type {ext}; supported: {_SUPPORTED_LIST}"
-    )
+    raise ToolCallError(f"unsupported type {ext}; supported: {_SUPPORTED_LIST}")
 
 
 class ReadDocumentTool(Tool):
