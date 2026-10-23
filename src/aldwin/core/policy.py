@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -113,6 +114,7 @@ class ApprovalPreview:
     summary: str
     detail: str | None = None
     mtime_ns: int | None = None
+    risky: tuple[str, ...] = ()
 
 
 PolicyAskFn = Callable[[ApprovalRequest], Awaitable[ApprovalAnswer]]
@@ -275,7 +277,7 @@ REGISTRY: Final[dict[str, ToolPolicy]] = {
 
 DEFAULT_MAX_OUTPUT_CHARS_BY_TOOL: Final[dict[str, int]] = {
     "read_file": 20_000,
-    "read_document": 20_000,
+    "read_document": 30_000,
     "web_fetch": 20_000,
     "list_dir": 12_000,
     "glob": 12_000,
@@ -289,7 +291,7 @@ DEFAULT_MAX_OUTPUT_CHARS_BY_TOOL: Final[dict[str, int]] = {
     "calculate": 4_000,
     "edit_file": 4_000,
     "write_file": 4_000,
-    "download_file": 4_000,
+    "download_file": 1_000,
     "create_skill": 4_000,
     "set_persona": 4_000,
 }
@@ -1026,6 +1028,9 @@ def decide(
                     raw_val = "."
                 elif arg_name == "cwd":
                     continue
+                elif arg_name == "dest" and tool_name == "download_file":
+                    # Optional; prepare_approval picks downloads/<name>.
+                    continue
                 else:
                     raise ValueError(f"missing path argument: {arg_name}")
             if not isinstance(raw_val, (str, Path)):
@@ -1444,7 +1449,7 @@ class PolicyWrappedTool(Tool):
 
         return resolved_args, target_str, primary_path
 
-    def _build_preview(
+    async def _build_preview(
         self,
         arguments: dict[str, Any],
         decision: Decision,
@@ -1453,7 +1458,9 @@ class PolicyWrappedTool(Tool):
         """Build `(summary, detail, mtime_ns)` for an `ApprovalRequest`."""
         prepare_fn = getattr(self._inner, "prepare_approval", None)
         if callable(prepare_fn):
-            preview: ApprovalPreview = prepare_fn(**arguments)
+            preview = prepare_fn(**arguments)
+            if inspect.isawaitable(preview):
+                preview = await preview
             return preview
 
         mtime_ns = (
@@ -1571,7 +1578,7 @@ class PolicyWrappedTool(Tool):
             )
 
         try:
-            preview = self._build_preview(arguments, decision, primary_path)
+            preview = await self._build_preview(arguments, decision, primary_path)
         except ToolCallError as exc:
             message = str(exc)
             return PreApprovedOutcome(
@@ -1581,6 +1588,8 @@ class PolicyWrappedTool(Tool):
                 denied_summary=_tool_call_error_summary(message),
             )
         digest = compute_digest(self.name, resolved_args, preview.detail)
+        preview_risky = getattr(preview, "risky", ()) or ()
+        merged_risky = tuple(dict.fromkeys((*decision.risky, *preview_risky)))
         req = ApprovalRequest(
             tool=self.name,
             tier=decision.kind,
@@ -1588,7 +1597,7 @@ class PolicyWrappedTool(Tool):
             detail=preview.detail,
             grantable=decision.grantable,
             grant_key=decision.grant_key if decision.grantable else None,
-            risky=decision.risky,
+            risky=merged_risky,
             digest=digest,
         )
         ans = await self._ask(req)
@@ -1801,7 +1810,9 @@ class PolicyWrappedTool(Tool):
             return True, None
 
         try:
-            current_preview = self._build_preview(arguments, decision, primary_path)
+            current_preview = await self._build_preview(
+                arguments, decision, primary_path
+            )
         except ToolCallError as exc:
             message = str(exc)
             return False, ToolOutput(
@@ -1831,6 +1842,8 @@ class PolicyWrappedTool(Tool):
         reask_tier: Literal["ask", "diff"] = (
             "diff" if decision.kind in ("diff", "auto") else "ask"
         )
+        preview_risky = getattr(current_preview, "risky", ()) or ()
+        reask_risky = tuple(dict.fromkeys((*decision.risky, *preview_risky)))
         reask_req = ApprovalRequest(
             tool=self.name,
             tier=reask_tier,
@@ -1838,7 +1851,7 @@ class PolicyWrappedTool(Tool):
             detail=current_preview.detail,
             grantable=decision.grantable,
             grant_key=decision.grant_key if decision.grantable else None,
-            risky=decision.risky,
+            risky=reask_risky,
             digest=current_digest,
         )
         ans = await self._ask(reask_req)
@@ -1871,7 +1884,9 @@ class PolicyWrappedTool(Tool):
             )
 
         try:
-            second_preview = self._build_preview(arguments, decision, primary_path)
+            second_preview = await self._build_preview(
+                arguments, decision, primary_path
+            )
         except ToolCallError as exc:
             message = str(exc)
             return False, ToolOutput(
