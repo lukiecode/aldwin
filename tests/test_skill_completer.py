@@ -1,14 +1,16 @@
-"""Tests for the `@` skill completer (ENG-432)."""
+"""Tests for the `@` skill completer and token lexer."""
 
 from __future__ import annotations
 
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
+from aldwin.cli.completion import build_chat_completer
 from aldwin.cli.skill_completer import (
     NO_MATCH_TMPL,
     SkillCache,
     SkillCompleter,
+    SkillLexer,
     extract_skill_tokens,
 )
 from aldwin.protocol import SkillCatalogItem
@@ -104,3 +106,40 @@ def test_extract_skill_tokens_order() -> None:
     known = {"files", "memory"}
     text = "A @files B @not-a-skill C @memory"
     assert extract_skill_tokens(text, known) == ["files", "memory"]
+
+
+def test_completer_sanitises_dirty_description() -> None:
+    dirty = "clean\x1b[2J\u202e mess"
+    cache = SkillCache(items=[_item("files", dirty)])
+    completer = SkillCompleter(cache)
+    docs = list(completer.get_completions(Document("@", 1), CompleteEvent()))
+    assert docs
+    meta = str(docs[0].display_meta)
+    assert "\x1b" not in meta
+    assert "\u202e" not in meta
+
+
+def test_lexer_highlights_known_skill_token() -> None:
+    cache = SkillCache(items=[_item("files")])
+    lexer = SkillLexer(cache)
+    get_line = lexer.lex_document(Document("Tidy @files please", 0))
+    parts = get_line(0)
+    styles = [style for style, _text in parts]
+    assert "class:skill-token" in styles
+    joined = "".join(text for _style, text in parts)
+    assert joined == "Tidy @files please"
+
+
+def test_lexer_leaves_unknown_at_plain() -> None:
+    cache = SkillCache(items=[_item("files")])
+    lexer = SkillLexer(cache)
+    get_line = lexer.lex_document(Document("see @unknown", 0))
+    parts = get_line(0)
+    assert all(style == "" for style, _text in parts)
+
+
+def test_v1_completer_skips_skill_picker() -> None:
+    cache = SkillCache(items=[_item("files")])
+    completer = build_chat_completer(cache, enable_skills=False)
+    docs = list(completer.get_completions(Document("@", 1), CompleteEvent()))
+    assert docs == []

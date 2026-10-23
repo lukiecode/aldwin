@@ -1,15 +1,18 @@
-"""prompt_toolkit `@` skill completer for the Aldwin chat input (ENG-432)."""
+"""prompt_toolkit `@` skill completer for the Aldwin chat input."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import StyleAndTextTuples
+from prompt_toolkit.lexers import Lexer
 
+from aldwin.client import sanitize_display_text
 from aldwin.protocol import SkillCatalogItem
 
 SKILL_TOKEN_RE: Final[re.Pattern[str]] = re.compile(
@@ -90,6 +93,41 @@ def _at_trigger(document: Document) -> tuple[str, int] | None:
     return fragment, -(len(fragment) + 1)
 
 
+class SkillLexer(Lexer):
+    """Highlight known `@skill` tokens in the chat input (accent style)."""
+
+    def __init__(self, cache: SkillCache) -> None:
+        self._cache = cache
+
+    def lex_document(self, document: Document) -> Callable[[int], StyleAndTextTuples]:
+        known = self._cache.known_names()
+
+        def get_line(lineno: int) -> StyleAndTextTuples:
+            if lineno < 0 or lineno >= len(document.lines):
+                return []
+            text = document.lines[lineno]
+            if not text or not known:
+                return [("", text)]
+            parts: StyleAndTextTuples = []
+            cursor = 0
+            for match in SKILL_TOKEN_RE.finditer(text):
+                name = match.group(1)
+                if name not in known:
+                    continue
+                start, end = match.start(0), match.end(0)
+                if start > cursor:
+                    parts.append(("", text[cursor:start]))
+                parts.append(("class:skill-token", text[start:end]))
+                cursor = end
+            if cursor < len(text):
+                parts.append(("", text[cursor:]))
+            elif not parts:
+                parts.append(("", text))
+            return parts
+
+        return get_line
+
+
 class SkillCompleter(Completer):
     """Complete `@skill` tokens from an in-memory catalogue cache."""
 
@@ -127,19 +165,19 @@ class SkillCompleter(Completer):
             yield Completion(
                 text="",
                 start_position=0,
-                display=NO_MATCH_TMPL.format(text=query),
+                display=NO_MATCH_TMPL.format(text=sanitize_display_text(query)),
                 display_meta="",
                 style="class:muted",
             )
             return
 
         for item in rows:
-            desc = item.description
+            desc = sanitize_display_text(item.description)
             if len(desc) > 60:
                 desc = desc[:59] + "…"
             yield Completion(
                 text=f"@{item.name} ",
                 start_position=start_pos,
-                display=item.name,
+                display=sanitize_display_text(item.name),
                 display_meta=desc,
             )

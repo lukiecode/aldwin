@@ -1,4 +1,4 @@
-"""Tests for `~/.aldwin/state/skills_recent.json` (ENG-432)."""
+"""Tests for `~/.aldwin/state/skills_recent.json`."""
 
 from __future__ import annotations
 

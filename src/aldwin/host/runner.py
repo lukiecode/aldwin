@@ -1006,15 +1006,17 @@ class AldwinHost:
                     DroppedSkill(name=name, reason=reason)
                     for name, reason in dropped_pairs
                 ]
-                await scope.emit(
-                    SkillsUsedEvent(
-                        re=req.id,
-                        names=[entry.name for entry in picked],
-                        dropped=dropped,
+                used_names = [entry.name for entry in picked]
+                if used_names or dropped:
+                    await scope.emit(
+                        SkillsUsedEvent(
+                            re=req.id,
+                            names=used_names,
+                            dropped=dropped,
+                        )
                     )
-                )
                 if picked:
-                    record_skills_used(self._home, [entry.name for entry in picked])
+                    record_skills_used(self._home, used_names)
             task_text = build_task(req.text, picked)
             if self._stored_session.turns is None:
                 self._stored_session.turns = []

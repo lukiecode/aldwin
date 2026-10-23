@@ -179,9 +179,9 @@ async def test_model_error_emits_single_error_event(
 
     events = await collect(host_client.turn("Hello"))
 
-    assert [ev.kind for ev in events] == ["skills.used", "error"]
-    assert isinstance(events[1], ErrorEvent)
-    assert events[1].code == "model_unavailable"
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
+    assert events[0].code == "model_unavailable"
 
 
 async def test_max_steps_emits_done_max_steps(

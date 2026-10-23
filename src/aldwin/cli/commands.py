@@ -270,12 +270,14 @@ def render_skills_report(report: SkillsReport, console: object) -> None:
     if not report.valid:
         rich_console.print(Text("  (no skills)", style="muted"))
     for skill in report.valid:
+        from aldwin.client import sanitize_display_text
+
         error = getattr(skill, "error", None)
         if error:
-            line = Text(f"{skill.name} · error: {error}", style="err")
-            rich_console.print(line)
+            name = sanitize_display_text(skill.name)
+            reason = sanitize_display_text(str(error))
+            rich_console.print(Text(f"{name} · error: {reason}", style="err"))
             continue
-        from aldwin.client import sanitize_display_text
 
         name = sanitize_display_text(skill.name)
         desc = sanitize_display_text(skill.description)

@@ -41,8 +41,20 @@ def shorten_one_line(text: str, limit: int = MAX_PREVIEW_CHARS) -> str:
     return collapsed[: limit - 1] + "…"
 
 
-def derive_session_title(memory: Memory) -> str:
-    """Derive a session title from the first `TaskStep` (up to 60 characters)."""
+def derive_session_title(
+    memory: Memory,
+    turns: list[dict[str, Any]] | None = None,
+) -> str:
+    """Derive a session title from the first user message (up to 60 characters).
+
+    Prefer original typed text from `turns` so `@`-injected task markup never
+    becomes the session title.
+    """
+    if turns:
+        first = turns[0].get("text")
+        if isinstance(first, str) and first.strip():
+            normalised = " ".join(first.split())
+            return normalised[:MAX_TITLE_CHARS]
     for step in memory.steps:
         if isinstance(step, TaskStep):
             normalised = " ".join(step.task.split())
@@ -160,7 +172,7 @@ class SessionStore:
         if todo is not None:
             stored.todo = list(todo)
         if not stored.meta.title:
-            stored.meta.title = derive_session_title(memory)
+            stored.meta.title = derive_session_title(memory, stored.turns)
 
         payload: dict[str, Any] = {
             "meta": asdict(stored.meta),
@@ -217,16 +229,17 @@ class SessionStore:
                 interrupted = bool(raw_meta["interrupted"])
             else:
                 interrupted = _is_memory_interrupted(memory)
+            turns = _normalise_turns_payload(raw_obj.get("turns"))
             meta = SessionMeta(
                 id=str(raw_meta["id"]),
                 created_at=str(raw_meta["created_at"]),
                 updated_at=str(raw_meta["updated_at"]),
                 model=str(raw_meta["model"]),
-                title=str(raw_meta.get("title", "")) or derive_session_title(memory),
+                title=str(raw_meta.get("title", ""))
+                or derive_session_title(memory, turns or None),
                 interrupted=interrupted,
             )
             todo = _normalise_todo_payload(raw_obj.get("todo"))
-            turns = _normalise_turns_payload(raw_obj.get("turns"))
             return StoredSession(
                 path=path,
                 meta=meta,

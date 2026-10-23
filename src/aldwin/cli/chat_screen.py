@@ -31,7 +31,7 @@ from aldwin.cli.commands import (
 )
 from aldwin.cli.completion import RefreshableCompleter, build_chat_completer
 from aldwin.cli.render import ChatRenderer
-from aldwin.cli.skill_completer import SkillCache, extract_skill_tokens
+from aldwin.cli.skill_completer import SkillCache, SkillLexer, extract_skill_tokens
 from aldwin.cli.theme import (
     PLAIN_PROMPT_STYLE,
     PROMPT_STYLE,
@@ -433,9 +433,11 @@ def build_prompt_session(
     input_dev: Input | None = None,
     output_dev: Output | None = None,
     completer: object | None = None,
+    lexer: object | None = None,
 ) -> PromptSession[str]:
     """Create `PromptSession` with `FileHistory`, completer, and keys."""
     from prompt_toolkit.completion import Completer
+    from prompt_toolkit.lexers import Lexer
 
     kb = KeyBindings()
 
@@ -469,9 +471,12 @@ def build_prompt_session(
             enable_skills=True,
         )
 
+    active_lexer = lexer if isinstance(lexer, Lexer) else None
+
     return PromptSession(
         history=_create_history(home),
         completer=active_completer,
+        lexer=active_lexer,
         key_bindings=kb,
         bottom_toolbar=toolbar_fn,
         style=PLAIN_PROMPT_STYLE if plain else PROMPT_STYLE,
@@ -577,6 +582,7 @@ async def _chat_loop(
         )
 
     skill_cache = SkillCache(items=[])
+    skill_lexer = SkillLexer(skill_cache)
     chat_completer = RefreshableCompleter(
         build_chat_completer(skill_cache, enable_skills=True)
     )
@@ -587,6 +593,7 @@ async def _chat_loop(
         input_dev=input_dev,
         output_dev=output_dev,
         completer=chat_completer,
+        lexer=skill_lexer,
     )
 
     async def _prompt_line(label: str) -> str:
@@ -604,6 +611,8 @@ async def _chat_loop(
         chat_completer.inner = build_chat_completer(
             skill_cache, enable_skills=enable_skills
         )
+        if not enable_skills:
+            session.lexer = None
         history_ev = await client.history(limit=20)
         if not skip_welcome:
             renderer.render_welcome(
@@ -622,6 +631,7 @@ async def _chat_loop(
                 chat_completer.inner = build_chat_completer(
                     skill_cache, enable_skills=False
                 )
+                session.lexer = None
         try:
             from aldwin.cli.todo_view import TodoViewState
 

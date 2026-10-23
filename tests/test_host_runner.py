@@ -236,10 +236,10 @@ async def test_tool_call_and_result_mapping_with_120_char_truncation(
         events = await _collect_turn(client, "check system")
 
         kinds = [ev.kind for ev in events]
-        assert kinds == ["skills.used", "tool_call", "tool_result", "text", "done"]
+        assert kinds == ["tool_call", "tool_result", "text", "done"]
 
-        tc_ev = events[1]
-        tr_ev = events[2]
+        tc_ev = events[0]
+        tr_ev = events[1]
         assert isinstance(tc_ev, ToolCallEvent)
         assert tc_ev.call_id == "c_42"
         assert tc_ev.name == "inspect_system"
@@ -311,8 +311,8 @@ async def test_error_classification_saves_session_and_hides_tracebacks(
 
         for expected_code, expected_phrase in expected_codes:
             events = await _collect_turn(client, f"trigger {expected_code}")
-            assert [ev.kind for ev in events] == ["skills.used", "error"]
-            err = events[1]
+            assert len(events) == 1
+            err = events[0]
             assert isinstance(err, ErrorEvent)
             assert err.code == expected_code
             assert expected_phrase in err.message.lower()
@@ -724,11 +724,11 @@ async def test_turn_direct_final_answer_emits_text_with_zero_tools(
         await client.connect()
         events = await _collect_turn(client, "hi")
         kinds = [ev.kind for ev in events]
-        assert kinds == ["skills.used", "text", "done"]
-        assert isinstance(events[1], TextEvent)
-        assert events[1].delta == "Direct reply via tool."
-        assert isinstance(events[2], DoneEvent)
-        assert events[2].reason == "answered"
+        assert kinds == ["text", "done"]
+        assert isinstance(events[0], TextEvent)
+        assert events[0].delta == "Direct reply via tool."
+        assert isinstance(events[1], DoneEvent)
+        assert events[1].reason == "answered"
 
         hist = await client.history()
         roles = [(item.role, item.text) for item in hist.messages]

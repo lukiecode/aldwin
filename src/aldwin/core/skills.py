@@ -482,12 +482,12 @@ def resolve_picked_skills(
         if not cleaned or cleaned in seen:
             continue
         seen.add(cleaned)
-        if len(picked) >= limit:
-            dropped.append((cleaned, "limit"))
-            continue
         entry = by_name.get(cleaned)
         if entry is None or entry.skill is None or _is_error_skill(entry):
             dropped.append((cleaned, "unknown"))
+            continue
+        if len(picked) >= limit:
+            dropped.append((cleaned, "limit"))
             continue
         picked.append(entry)
     return picked, dropped

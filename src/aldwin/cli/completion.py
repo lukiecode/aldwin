@@ -1,4 +1,4 @@
-"""Merged slash + skill completers for the Aldwin chat prompt (ENG-432)."""
+"""Merged slash + skill completers for the Aldwin chat prompt."""
 
 from __future__ import annotations
 

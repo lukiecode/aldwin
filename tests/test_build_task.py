@@ -1,4 +1,4 @@
-"""Tests for `build_task` and `resolve_picked_skills` (ENG-432)."""
+"""Tests for `build_task` and `resolve_picked_skills`."""
 
 from __future__ import annotations
 
@@ -103,9 +103,9 @@ def test_resolve_picked_dedupe_limit_unknown() -> None:
     )
     assert [p.name for p in picked] == ["files", "memory", "terminal"]
     reasons = dict(dropped)
-    # Past the third pick: further names are `limit` (even if also unknown).
-    assert reasons["gone"] == "limit"
-    assert reasons["broken"] == "limit"
+    # Unknown / error skills stay `unknown` even after the pick cap is full.
+    assert reasons["gone"] == "unknown"
+    assert reasons["broken"] == "unknown"
 
     picked_u, dropped_u = resolve_picked_skills(["gone", "broken"], cat, limit=3)
     assert picked_u == []

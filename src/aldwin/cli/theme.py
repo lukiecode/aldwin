@@ -55,6 +55,7 @@ PROMPT_STYLE: Final[Style] = Style.from_dict(
     {
         "": "ansibrightblack",
         "prompt": "ansicyan bold",
+        "skill-token": "ansicyan bold",
         "bottom-toolbar": "noreverse ansibrightblack",
         "bottom-toolbar.text": "noreverse ansibrightblack",
         "completion-menu": "bg:ansiblack ansiwhite",

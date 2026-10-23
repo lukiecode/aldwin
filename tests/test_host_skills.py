@@ -1,4 +1,4 @@
-"""Host skill picker wiring: list/show/used, inject, history (ENG-432)."""
+"""Host skill picker wiring: list/show/used, inject, history."""
 
 from __future__ import annotations
 
@@ -13,11 +13,13 @@ from aldwin.core.home import ensure_home
 from aldwin.core.settings import AldwinConfig, SecretsConfig
 from aldwin.host import AldwinHost, InProcessTransport
 from aldwin.protocol import (
+    ApprovalEvent,
     DoneEvent,
     SkillBodyEvent,
     SkillsEvent,
     SkillsUsedEvent,
     TextEvent,
+    ToolResultEvent,
 )
 
 
@@ -157,7 +159,73 @@ async def test_turn_drops_unknown_and_over_limit(aldwin_home: Path) -> None:
         assert used.names == ["files", "memory", "terminal"]
         reasons = {d.name: d.reason for d in used.dropped}
         assert reasons["web-research"] == "limit"
-        assert reasons["gone"] == "limit"
+        assert reasons["gone"] == "unknown"
+    finally:
+        await client.close()
+        await host.stop_host()
+
+
+async def test_session_title_uses_original_user_text(aldwin_home: Path) -> None:
+    ensure_home(aldwin_home)
+    fake_model = FakeModel()
+    fake_model.add_turns(FakeTurn.text("ok"))
+    transport = InProcessTransport()
+    host = AldwinHost(
+        transport,
+        home=aldwin_home,
+        agent_builder=_builder(fake_model, aldwin_home),
+    )
+    await host.start()
+    client = AldwinClient(transport.connect())
+    try:
+        await client.connect()
+        async for _ in client.turn("Tidy this @files", skills=["files"]):
+            pass
+        title = host._stored_session.meta.title
+        assert title.startswith("Tidy this @files")
+        assert "<picked_skills>" not in title
+    finally:
+        await client.close()
+        await host.stop_host()
+
+
+async def test_picked_skill_does_not_widen_hardline(
+    aldwin_home: Path, tmp_path: Path, fake_model: FakeModel
+) -> None:
+    """`@terminal` injects guidance; hardline still refuses `mkfs` without ask."""
+    ensure_home(aldwin_home)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    fake_model.add_turns(
+        FakeTurn.tool_call(
+            "run_command",
+            {"command": "mkfs.ext4 /tmp/aldwin-hardline-probe"},
+            call_id="c_mkfs",
+        ),
+        FakeTurn.text(["blocked"]),
+    )
+    transport = InProcessTransport()
+    host = AldwinHost(transport, home=aldwin_home, workspace=ws)
+    host._agent.model = fake_model
+    host._agent_session = host._agent.start()
+    await host.start()
+    client = AldwinClient(transport.connect())
+    try:
+        await client.connect()
+        events = [
+            ev
+            async for ev in client.turn(
+                "format disk @terminal",
+                skills=["terminal"],
+            )
+        ]
+        assert any(isinstance(ev, SkillsUsedEvent) for ev in events)
+        assert not any(isinstance(ev, ApprovalEvent) for ev in events)
+        results = [ev for ev in events if isinstance(ev, ToolResultEvent)]
+        assert results
+        assert results[0].ok is False
+        summary = results[0].summary.lower()
+        assert "never" in summary or "block" in summary
     finally:
         await client.close()
         await host.stop_host()
