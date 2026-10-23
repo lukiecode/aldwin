@@ -1,4 +1,4 @@
-"""`download_file` — save a public URL into the workspace after Ask approval."""
+"""`download_file`: save a public URL into the workspace after Ask approval."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
@@ -31,7 +32,7 @@ from aldwin.core.tools.web_fetch import (
     UnsafeUrlError,
     validate_public_url,
 )
-from aldwin.core.workspace import Workspace, WorkspaceError
+from aldwin.core.workspace import ResolvedPath, Workspace, WorkspaceError
 
 DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 120.0
 MAX_DOWNLOAD_BYTES: Final[int] = 100 * 1024 * 1024
@@ -63,6 +64,22 @@ _DISPOSITION_FILENAME_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 ProgressFn = Callable[[int, int | None], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class _DownloadPlan:
+    """Resolved probe result shared by prepare and forward."""
+
+    final_url: str
+    display: str
+    target: Path
+    content_type: str
+    size: int | None
+    filename: str
+    first_host: str
+    summary: str
+    risky: tuple[str, ...]
+    detail: str
 
 
 def running_summary(
@@ -212,10 +229,6 @@ class DownloadFileTool(Tool):
         self._max_bytes = max_bytes
         self._timeout = timeout
         self._max_redirects = max_redirects
-        self._approved_final_url: str | None = None
-        self._approved_dest_display: str | None = None
-        self._approved_content_type: str | None = None
-        self._approved_size: int | None = None
 
     async def _follow_headers(
         self,
@@ -258,7 +271,6 @@ class DownloadFileTool(Tool):
                     raise FetchError(
                         f"HTTP {response.status_code} when fetching {current_url}"
                     )
-                # Headers only; do not buffer a GET probe body.
                 return (
                     current_url,
                     httpx.Headers(response.headers),
@@ -288,7 +300,7 @@ class DownloadFileTool(Tool):
         self,
         dest: str | None,
         filename: str,
-    ) -> tuple[Any, str]:
+    ) -> tuple[ResolvedPath, str]:
         """Resolve destination; return `(ResolvedPath, display relpath)`."""
         if dest is None or not str(dest).strip():
             rel = f"downloads/{filename}"
@@ -303,12 +315,8 @@ class DownloadFileTool(Tool):
             raise ToolCallError(str(exc)) from exc
         return resolved, resolved.display
 
-    async def prepare_approval(
-        self,
-        url: str,
-        dest: str | None = None,
-    ) -> ApprovalPreview:
-        """Probe the URL, pick dest, and build the Ask summary (no write)."""
+    async def _plan(self, url: str, dest: str | None = None) -> _DownloadPlan:
+        """Probe URL, pick dest, and build summary fields (no write)."""
         first_host = _host_of(url)
 
         try:
@@ -375,22 +383,39 @@ class DownloadFileTool(Tool):
 
         risky: tuple[str, ...] = ()
         if _is_program_file(filename):
+            # One trailing ? for the ask panel; risky clause has none of its own.
             summary = f"{summary.rstrip('?')} · Aldwin won't run it?"
             risky = ("program file",)
 
         detail = f"url={url}\nfinal_url={final_url}\ndest={display}"
-
-        self._approved_final_url = final_url
-        self._approved_dest_display = display
-        self._approved_content_type = content_type
-        self._approved_size = size
-
-        mtime_ns = target.stat().st_mtime_ns if target.exists() else None
-        return ApprovalPreview(
+        return _DownloadPlan(
+            final_url=final_url,
+            display=display,
+            target=target,
+            content_type=content_type,
+            size=size,
+            filename=filename,
+            first_host=first_host,
             summary=summary,
-            detail=detail,
-            mtime_ns=mtime_ns,
             risky=risky,
+            detail=detail,
+        )
+
+    async def prepare_approval(
+        self,
+        url: str,
+        dest: str | None = None,
+    ) -> ApprovalPreview:
+        """Probe the URL, pick dest, and build the Ask summary (no write)."""
+        plan = await self._plan(url, dest)
+        mtime_ns = (
+            plan.target.stat().st_mtime_ns if plan.target.exists() else None
+        )
+        return ApprovalPreview(
+            summary=plan.summary,
+            detail=plan.detail,
+            mtime_ns=mtime_ns,
+            risky=plan.risky,
         )
 
     async def _stream_to_path(
@@ -415,6 +440,7 @@ class DownloadFileTool(Tool):
         os.close(fd)
         written = 0
         content_type = "application/octet-stream"
+        replaced = False
 
         try:
             for hop in range(self._max_redirects + 1):
@@ -451,15 +477,10 @@ class DownloadFileTool(Tool):
 
                     final_host = _host_of(current_url)
                     expected_host = _host_of(expected_final)
-                    if final_host != expected_host or current_url != expected_final:
-                        # Allow trailing-slash / equivalent URL on same host only
-                        # when the approved final matches exactly.
-                        if (
-                            final_host != expected_host
-                            or urlsplit(current_url).path
-                            != urlsplit(expected_final).path
-                        ):
-                            raise ToolCallError(DENIAL_TEXT["policy_error"])
+                    if final_host != expected_host:
+                        raise ToolCallError(DENIAL_TEXT["policy_error"])
+                    if urlsplit(current_url).path != urlsplit(expected_final).path:
+                        raise ToolCallError(DENIAL_TEXT["policy_error"])
 
                     content_type = _media_type(response.headers.get("content-type"))
                     length_raw = response.headers.get("content-length")
@@ -480,57 +501,33 @@ class DownloadFileTool(Tool):
                             handle.write(chunk)
                             if self._on_progress is not None:
                                 await self._on_progress(written, expected_size)
-                            # Surface task cancellation between chunks / after progress.
                             await asyncio.sleep(0)
 
                     os.replace(tmp_path, dest)
+                    replaced = True
                     return current_url, written, content_type
 
             raise FetchError(
                 f"Refused: exceeded maximum redirects ({self._max_redirects})."
             )
-        except Exception:
-            if tmp_path.exists():
+        finally:
+            if not replaced and tmp_path.exists():
                 tmp_path.unlink(missing_ok=True)
-            if dest.exists() and dest != tmp_path:
-                # Only remove dest if we somehow wrote there; we use replace.
-                pass
-            raise
 
     async def forward(  # type: ignore[override]
         self,
         url: str,
         dest: str | None = None,
     ) -> ToolOutput:
-        expected_final = self._approved_final_url
-        display = self._approved_dest_display
-        content_type = self._approved_content_type or "application/octet-stream"
-        expected_size = self._approved_size
-
-        if expected_final is None or display is None:
-            # prepare_approval should have run; re-probe if somehow skipped.
-            preview = await self.prepare_approval(url, dest)
-            del preview
-            expected_final = self._approved_final_url
-            display = self._approved_dest_display
-            content_type = self._approved_content_type or content_type
-            expected_size = self._approved_size
-            if expected_final is None or display is None:
-                raise ToolCallError(DENIAL_TEXT["policy_error"])
-
-        try:
-            resolved = self._workspace.resolve_safe(
-                display,
-                granted_folders=self._session.granted_folders,
-            )
-        except WorkspaceError as exc:
-            raise ToolCallError(str(exc)) from exc
-
-        target = resolved.path
-        if target.exists():
-            raise ToolCallError(
-                f"{display} already exists; pass dest to save under another name"
-            )
+        # Re-plan (same helpers as prepare). Policy recheck already bound the
+        # digest to url/final_url/dest; this picks dest again without storing
+        # per-call fields on the tool instance.
+        plan = await self._plan(url, dest)
+        display = plan.display
+        target = plan.target
+        expected_final = plan.final_url
+        expected_size = plan.size
+        content_type = plan.content_type
 
         try:
             async with asyncio.timeout(self._timeout):

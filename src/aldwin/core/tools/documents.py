@@ -1,4 +1,4 @@
-"""`read_document` — convert PDF/Office/CSV/HTML to markdown for the model."""
+"""`read_document`: convert PDF/Office/CSV/HTML to markdown for the model."""
 
 from __future__ import annotations
 
@@ -239,42 +239,37 @@ def _sheet_to_markdown(rows: list[list[Any]], *, total_rows: int) -> str:
 
 
 def _read_xlsx(path: Path, sheet: str | None) -> tuple[str, str]:
-    wb_names = load_workbook(path, read_only=True, data_only=False)
-    names = list(wb_names.sheetnames)
-    wb_names.close()
-    if not names:
-        raise ToolCallError(f"no sheets in {path.name}")
+    wb_form = load_workbook(path, read_only=True, data_only=False)
+    try:
+        names = list(wb_form.sheetnames)
+        if not names:
+            raise ToolCallError(f"no sheets in {path.name}")
 
-    if sheet is None or sheet.strip() == "":
-        chosen = names[0]
-    elif sheet.isdigit():
-        index = int(sheet)
-        if index < 1 or index > len(names):
+        if sheet is None or sheet.strip() == "":
+            chosen = names[0]
+        elif sheet.isdigit():
+            index = int(sheet)
+            if index < 1 or index > len(names):
+                raise ToolCallError(
+                    f"sheet {sheet!r} does not exist; Sheets: {', '.join(names)}"
+                )
+            chosen = names[index - 1]
+        elif sheet in names:
+            chosen = sheet
+        else:
             raise ToolCallError(
                 f"sheet {sheet!r} does not exist; Sheets: {', '.join(names)}"
             )
-        chosen = names[index - 1]
-    elif sheet in names:
-        chosen = sheet
-    else:
-        raise ToolCallError(
-            f"sheet {sheet!r} does not exist; Sheets: {', '.join(names)}"
-        )
+
+        form_rows = [list(row) for row in wb_form[chosen].iter_rows(values_only=True)]
+    finally:
+        wb_form.close()
 
     wb_data = load_workbook(path, read_only=True, data_only=True)
-    wb_form = load_workbook(path, read_only=True, data_only=False)
     try:
-        ws_data = wb_data[chosen]
-        ws_form = wb_form[chosen]
-        data_rows: list[list[Any]] = []
-        form_rows: list[list[Any]] = []
-        for row in ws_data.iter_rows(values_only=True):
-            data_rows.append(list(row))
-        for row in ws_form.iter_rows(values_only=True):
-            form_rows.append(list(row))
+        data_rows = [list(row) for row in wb_data[chosen].iter_rows(values_only=True)]
     finally:
         wb_data.close()
-        wb_form.close()
 
     # Prefer cached values; mark missing formula caches.
     merged: list[list[Any]] = []
@@ -370,7 +365,7 @@ def convert_document(
     sheet: str | None = None,
     cancel: asyncio.Event | None = None,
 ) -> tuple[str, str]:
-    """Convert `path` to markdown and a FR-10 summary suffix."""
+    """Convert `path` to markdown and a one-line CLI summary suffix."""
     ext = path.suffix.lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise ToolCallError(

@@ -25,6 +25,7 @@ from aldwin.core.tools.documents import (
     ReadDocumentTool,
     build_document_tools,
     convert_document,
+    running_summary,
 )
 from aldwin.core.tools.download import DownloadFileTool
 from aldwin.core.workspace import Workspace
@@ -86,7 +87,7 @@ def docs(tmp_path: Path, aldwin_home: Path) -> SimpleNamespace:
     )
 
 
-async def test_tc01_text_pdf_two_pages(docs: SimpleNamespace) -> None:
+async def test_text_pdf_two_pages(docs: SimpleNamespace) -> None:
     """Text PDF yields page headings, words in the summary, and no ask."""
     result = await docs.tools["read_document"].call({"path": "bill.pdf"})
     assert result.ok is True
@@ -98,8 +99,8 @@ async def test_tc01_text_pdf_two_pages(docs: SimpleNamespace) -> None:
     assert docs.asks == []
 
 
-async def test_tc02_scanned_pdf(docs: SimpleNamespace) -> None:
-    """Scanned page gets the OCR note; a blank page would not."""
+async def test_scanned_pdf_ocr_note(docs: SimpleNamespace) -> None:
+    """Scanned page (little text + image) gets the OCR note."""
     result = await docs.tools["read_document"].call({"path": "scanned.pdf"})
     body = _inner(str(result))
     assert "## Page 1" in body
@@ -107,7 +108,15 @@ async def test_tc02_scanned_pdf(docs: SimpleNamespace) -> None:
     assert result.summary.endswith("· 0 words")
 
 
-async def test_tc03_pages_selection_oor(docs: SimpleNamespace) -> None:
+async def test_blank_pdf_no_ocr_note(docs: SimpleNamespace) -> None:
+    """A blank page with no image must not get the scanned OCR message."""
+    result = await docs.tools["read_document"].call({"path": "blank.pdf"})
+    body = _inner(str(result))
+    assert "## Page 1" in body
+    assert "OCR arrives" not in body
+
+
+async def test_pages_selection_out_of_range(docs: SimpleNamespace) -> None:
     """Page ranges select content; out-of-range pages become notes."""
     result = await docs.tools["read_document"].call(
         {"path": "five_pages.pdf", "pages": "2-3,9"}
@@ -118,15 +127,15 @@ async def test_tc03_pages_selection_oor(docs: SimpleNamespace) -> None:
     assert "page 9 does not exist (5 pages)" in body
 
 
-async def test_tc04_encrypted_pdf(docs: SimpleNamespace) -> None:
-    """Encrypted PDF soft-fails with the FR message."""
+async def test_encrypted_pdf_message(docs: SimpleNamespace) -> None:
+    """Encrypted PDF soft-fails with the unlock message."""
     msg = await _call_fail(docs.tools["read_document"], {"path": "secret.pdf"})
     assert msg == "encrypted: secret.pdf; open it and save an unlocked copy"
     assert docs.asks == []
 
 
-async def test_tc05_xlsx_sheet_row_cap(docs: SimpleNamespace) -> None:
-    """XLSX sheet listing, 200-row cap, and FR-10 summary."""
+async def test_xlsx_sheet_row_cap(docs: SimpleNamespace) -> None:
+    """XLSX sheet listing, 200-row cap, and summary row counts."""
     result = await docs.tools["read_document"].call(
         {"path": "Q3_large.xlsx", "sheet": "Q3 Detail"}
     )
@@ -136,7 +145,7 @@ async def test_tc05_xlsx_sheet_row_cap(docs: SimpleNamespace) -> None:
     assert result.summary == "Read Q3_large.xlsx · sheet Q3 Detail · 200 of 1,540 rows"
 
 
-async def test_tc06_unsupported_type(docs: SimpleNamespace) -> None:
+async def test_unsupported_type_lists_formats(docs: SimpleNamespace) -> None:
     """Unsupported extension lists the supported types."""
     msg = await _call_fail(docs.tools["read_document"], {"path": "x.pages"})
     assert (
@@ -145,7 +154,7 @@ async def test_tc06_unsupported_type(docs: SimpleNamespace) -> None:
     )
 
 
-async def test_tc07_injection_pdf_hardline(docs: SimpleNamespace) -> None:
+async def test_injection_pdf_hardline_blocks_rm(docs: SimpleNamespace) -> None:
     """Injected PDF text is wrapped once; hardline still blocks rm -rf."""
     from aldwin.core.policy import match_hardline, normalise_command
     from aldwin.core.tools.run_command import build_run_command_tool
@@ -182,19 +191,18 @@ async def test_tc07_injection_pdf_hardline(docs: SimpleNamespace) -> None:
     assert len(docs.asks) == before
 
 
-async def test_tc18_escape_untrusted_in_pdf(docs: SimpleNamespace) -> None:
-    """A forged closing untrusted tag inside the PDF is escaped."""
-    # inject.pdf may already contain injection text; also convert raw if needed
-    result = await docs.tools["read_document"].call({"path": "inject.pdf"})
+async def test_forged_untrusted_tag_in_pdf_is_escaped(docs: SimpleNamespace) -> None:
+    """A forged closing untrusted tag inside the PDF is escaped once."""
+    result = await docs.tools["read_document"].call({"path": "escape_untrusted.pdf"})
     text = str(result)
     assert text.count("<untrusted ") == 1
-    assert "</untrusted id=" in text
-    # Inner forged tags must not appear as real markup
+    assert "&lt;/untrusted" in text
     body = _inner(text)
-    assert "<untrusted" not in body or "&lt;" in str(result)
+    assert re.search(r'</untrusted id="u-0000">', body) is None
+    assert 'u-0000' in body or "forged close" in body
 
 
-async def test_tc22_document_too_large(
+async def test_document_too_large(
     docs: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Files over 50 MB soft-fail before conversion."""
@@ -203,7 +211,7 @@ async def test_tc22_document_too_large(
     assert "too large:" in msg and "limit 50 MB" in msg
 
 
-async def test_tc23_sheet_default_and_index(docs: SimpleNamespace) -> None:
+async def test_sheet_default_and_index(docs: SimpleNamespace) -> None:
     """Default sheet is first; numeric sheet selects by 1-based index."""
     default = await docs.tools["read_document"].call({"path": "Q3_large.xlsx"})
     body = _inner(str(default))
@@ -216,7 +224,7 @@ async def test_tc23_sheet_default_and_index(docs: SimpleNamespace) -> None:
     assert "sheet Q3 Detail" in second.summary
 
 
-async def test_tc24_docx_pptx_shape(docs: SimpleNamespace) -> None:
+async def test_docx_pptx_shape(docs: SimpleNamespace) -> None:
     """DOCX and PPTX convert to non-empty markdown with slide headings."""
     docx = await docs.tools["read_document"].call({"path": "contract.docx"})
     assert docx.ok is True
@@ -228,7 +236,7 @@ async def test_tc24_docx_pptx_shape(docs: SimpleNamespace) -> None:
     assert "## Slide 1" in body
 
 
-async def test_tc25_csv_semicolon_latin1(docs: SimpleNamespace) -> None:
+async def test_csv_semicolon_latin1(docs: SimpleNamespace) -> None:
     """CSV with `;` and latin-1 bytes parses without crashing."""
     result = await docs.tools["read_document"].call({"path": "semi.csv"})
     assert result.ok is True
@@ -236,31 +244,33 @@ async def test_tc25_csv_semicolon_latin1(docs: SimpleNamespace) -> None:
     assert "|" in body
 
 
-async def test_tc26_html_markdownify(docs: SimpleNamespace) -> None:
+async def test_html_markdownify_keeps_links(docs: SimpleNamespace) -> None:
     """HTML keeps links and strips nav/script noise."""
     result = await docs.tools["read_document"].call({"path": "page.html"})
     assert result.ok is True
     body = _inner(str(result))
-    assert "script" not in body.lower() or "<script" not in body.lower()
-    assert "http" in body or "[" in body or "link" in body.lower() or body.strip()
+    assert "<script" not in body.lower()
+    assert body.strip()
 
 
-async def test_tc28_output_caps() -> None:
-    """Tool and DEFAULT_MAX caps match the ticket (30k / 1k)."""
+async def test_output_caps() -> None:
+    """Tool and DEFAULT_MAX caps match 30k / 1k."""
     assert ReadDocumentTool.max_output_chars == 30_000
     assert DownloadFileTool.max_output_chars == 1_000
     assert DEFAULT_MAX_OUTPUT_CHARS_BY_TOOL["read_document"] == 30_000
     assert DEFAULT_MAX_OUTPUT_CHARS_BY_TOOL["download_file"] == 1_000
 
 
-async def test_tc29_pdf_page_footer(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_pdf_page_footer_when_truncated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When the char budget fills, remaining pages get a pages= footer."""
     monkeypatch.setattr("aldwin.core.tools.documents.MAX_DOCUMENT_CHARS", 80)
     body, _suffix = convert_document(FIXTURES / "five_pages.pdf")
     assert "not shown; call again with pages=" in body
 
 
-async def test_tc30_outside_document_ask(
+async def test_outside_document_ask_once(
     docs: SimpleNamespace, tmp_path: Path
 ) -> None:
     """Outside-workspace PDF asks once; yes_session skips the second ask."""
@@ -282,7 +292,7 @@ async def test_tc30_outside_document_ask(
     assert docs.asks == []
 
 
-async def test_tc37_read_document_auto_log(docs: SimpleNamespace) -> None:
+async def test_read_document_auto_log_has_no_body(docs: SimpleNamespace) -> None:
     """Auto log records path, never page body."""
     await docs.tools["read_document"].call({"path": "bill.pdf"})
     log_path = docs.home / "logs" / "approvals.jsonl"
@@ -294,7 +304,7 @@ async def test_tc37_read_document_auto_log(docs: SimpleNamespace) -> None:
     assert "Energy bill" not in last
 
 
-async def test_tc38_single_untrusted_wrapper(docs: SimpleNamespace) -> None:
+async def test_single_untrusted_wrapper(docs: SimpleNamespace) -> None:
     """Tool source has no untrusted wrapper; policy wraps once."""
     result = await docs.tools["read_document"].call({"path": "bill.pdf"})
     assert str(result).count("<untrusted") == 1
@@ -302,7 +312,7 @@ async def test_tc38_single_untrusted_wrapper(docs: SimpleNamespace) -> None:
     assert "<untrusted" not in source
 
 
-async def test_tc39_cancel_mid_pdf() -> None:
+async def test_cancel_mid_pdf() -> None:
     """Cancel between PDF pages raises CancelledError."""
     cancel = asyncio.Event()
     cancel.set()
@@ -310,7 +320,7 @@ async def test_tc39_cancel_mid_pdf() -> None:
         convert_document(FIXTURES / "five_pages.pdf", cancel=cancel)
 
 
-async def test_tc41_registration_and_catalog(
+async def test_registration_and_catalog(
     docs: SimpleNamespace, aldwin_home: Path
 ) -> None:
     """Both tools register; catalog and instructions mention them."""
@@ -331,7 +341,7 @@ async def test_tc41_registration_and_catalog(
         assert "aldwin.core" not in path.read_text(encoding="utf-8")
 
 
-async def test_tc42_xlsx_cached_formula(docs: SimpleNamespace) -> None:
+async def test_xlsx_missing_formula_cache(docs: SimpleNamespace) -> None:
     """Missing formula cache shows the placeholder, not a blank."""
     from openpyxl import Workbook
 
@@ -349,13 +359,21 @@ async def test_tc42_xlsx_cached_formula(docs: SimpleNamespace) -> None:
     assert "(formula, not calculated)" in body
 
 
-async def test_tc43_bad_sheet_name(docs: SimpleNamespace) -> None:
+async def test_bad_sheet_name_lists_sheets(docs: SimpleNamespace) -> None:
     """Unknown sheet soft-fails listing available sheets."""
     msg = await _call_fail(
         docs.tools["read_document"],
         {"path": "Q3_large.xlsx", "sheet": "Nope"},
     )
     assert "Nope" in msg and "Sheets:" in msg
+
+
+def test_running_summary_read_document(docs: SimpleNamespace) -> None:
+    """Pending row for read_document uses the display path."""
+    assert (
+        running_summary("read_document", {"path": "bill.pdf"}, docs.workspace)
+        == "Read bill.pdf"
+    )
 
 
 def test_markitdown_not_a_dependency() -> None:

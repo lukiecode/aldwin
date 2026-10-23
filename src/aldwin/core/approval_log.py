@@ -55,9 +55,10 @@ _SECRET_ASSIGN_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
-# URL / form query params: `token=…`, `key=…`, `password=…`, etc.
+# URL / form query params: `token=…`, `password=…`, `api_key=…`, etc.
+# Bare `key=` is omitted so sorting params like `?key=name` stay readable.
 _SECRET_QUERY_RE: Final[re.Pattern[str]] = re.compile(
-    r"([?&#]?)(key|token|secret|password|passwd|credential|api_key|access_token)"
+    r"([?&#]?)(token|secret|password|passwd|credential|api_key|access_token)"
     r"=([^\s&#]*)",
     re.IGNORECASE,
 )

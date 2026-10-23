@@ -22,6 +22,7 @@ from aldwin.core.policy import (
 from aldwin.core.tools.download import (
     DownloadFileTool,
     build_download_tool,
+    running_summary,
     sanitize_filename,
 )
 from aldwin.core.workspace import Workspace
@@ -89,7 +90,7 @@ def download(tmp_path: Path, aldwin_home: Path) -> SimpleNamespace:
     )
 
 
-async def test_tc08_loopback_ssrf(download: SimpleNamespace) -> None:
+async def test_loopback_ssrf(download: SimpleNamespace) -> None:
     """Loopback URLs are blocked before ask; handler never runs."""
     hit = False
 
@@ -109,7 +110,7 @@ async def test_tc08_loopback_ssrf(download: SimpleNamespace) -> None:
     )
 
 
-async def test_tc09_redirect_to_link_local(download: SimpleNamespace) -> None:
+async def test_redirect_to_link_local(download: SimpleNamespace) -> None:
     """Redirect to link-local is blocked; no leftover files."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -131,7 +132,7 @@ async def test_tc09_redirect_to_link_local(download: SimpleNamespace) -> None:
     assert not (download.root / "downloads" / "a.pdf").exists()
 
 
-async def test_tc10_hundred_mb_cap(download: SimpleNamespace) -> None:
+async def test_hundred_mb_cap(download: SimpleNamespace) -> None:
     """Stream over 100 MB aborts; dest and temps are gone."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -161,7 +162,7 @@ async def test_tc10_hundred_mb_cap(download: SimpleNamespace) -> None:
     assert not list(download.root.rglob("*.aldwin-tmp"))
 
 
-async def test_tc11_happy_download(download: SimpleNamespace) -> None:
+async def test_happy_download(download: SimpleNamespace) -> None:
     """Approved download saves under downloads/ with FR summary."""
     payload = b"%PDF" + (b"a" * (2 * 1024 * 1024 + 300_000))  # ~2.3 MB
 
@@ -189,7 +190,7 @@ async def test_tc11_happy_download(download: SimpleNamespace) -> None:
     assert download.asks[0].grantable is False
 
 
-async def test_tc12_no_overwrite(download: SimpleNamespace) -> None:
+async def test_no_overwrite(download: SimpleNamespace) -> None:
     """Existing dest soft-fails before ask and leaves bytes unchanged."""
     dest_dir = download.root / "downloads"
     dest_dir.mkdir()
@@ -216,7 +217,7 @@ async def test_tc12_no_overwrite(download: SimpleNamespace) -> None:
     assert download.asks == []
 
 
-async def test_tc13_cancel_mid_download(download: SimpleNamespace) -> None:
+async def test_cancel_mid_download(download: SimpleNamespace) -> None:
     """Cancel mid-stream removes temp and dest."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -272,7 +273,7 @@ async def test_tc13_cancel_mid_download(download: SimpleNamespace) -> None:
     assert not list(download.root.rglob("*.aldwin-tmp"))
 
 
-async def test_tc15_disposition_id_rsa(download: SimpleNamespace) -> None:
+async def test_disposition_id_rsa_blocked(download: SimpleNamespace) -> None:
     """Blocked filename from Content-Disposition fails before ask."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -294,7 +295,7 @@ async def test_tc15_disposition_id_rsa(download: SimpleNamespace) -> None:
     assert not (download.root / "downloads" / "id_rsa").exists()
 
 
-async def test_tc16_redirect_host_summary(download: SimpleNamespace) -> None:
+async def test_redirect_host_summary(download: SimpleNamespace) -> None:
     """Cross-host redirect appears in the approval summary and detail."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -325,7 +326,7 @@ async def test_tc16_redirect_host_summary(download: SimpleNamespace) -> None:
     assert download.asks[0].grantable is False
 
 
-async def test_tc17_program_file(download: SimpleNamespace) -> None:
+async def test_program_file_risky(download: SimpleNamespace) -> None:
     """Program extensions get the risky label and won't-run suffix."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -346,7 +347,7 @@ async def test_tc17_program_file(download: SimpleNamespace) -> None:
     assert download.asks[0].summary.endswith("· Aldwin won't run it?")
 
 
-async def test_tc19_log_redacts_token(download: SimpleNamespace) -> None:
+async def test_log_redacts_token(download: SimpleNamespace) -> None:
     """Approvals log redacts query secrets and never stores PDF bytes."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -368,8 +369,8 @@ async def test_tc19_log_redacts_token(download: SimpleNamespace) -> None:
     assert "%PDF" not in log_text
 
 
-async def test_tc20_user_declines(download: SimpleNamespace) -> None:
-    """Decline returns ENG-425 denial text and saves nothing."""
+async def test_user_declines(download: SimpleNamespace) -> None:
+    """Decline returns the fixed user-denial text and saves nothing."""
     download.answer["answer"] = ApprovalAnswer("no", "user")
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -391,7 +392,7 @@ async def test_tc20_user_declines(download: SimpleNamespace) -> None:
     assert download.session.turn_denials >= 1
 
 
-async def test_tc21_get_host_drift(download: SimpleNamespace) -> None:
+async def test_get_host_drift(download: SimpleNamespace) -> None:
     """GET redirect to a new host after approve fails the safety check."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -422,7 +423,7 @@ async def test_tc21_get_host_drift(download: SimpleNamespace) -> None:
     assert not (download.root / "downloads" / "d.pdf").exists()
 
 
-async def test_tc27_optional_dest_decide(download: SimpleNamespace) -> None:
+async def test_optional_dest_decide(download: SimpleNamespace) -> None:
     """Missing dest does not fail closed in decide(); prepare picks downloads/."""
     decision = decide(
         "download_file",
@@ -448,7 +449,7 @@ async def test_tc27_optional_dest_decide(download: SimpleNamespace) -> None:
     assert (download.root / "downloads" / "a.pdf").exists()
 
 
-async def test_tc32_non_http_schemes(download: SimpleNamespace) -> None:
+async def test_non_http_schemes(download: SimpleNamespace) -> None:
     """file:// and ftp:// are refused without asking."""
     hit = False
 
@@ -467,7 +468,7 @@ async def test_tc32_non_http_schemes(download: SimpleNamespace) -> None:
     assert download.asks == []
 
 
-async def test_tc33_content_length_over_cap(download: SimpleNamespace) -> None:
+async def test_content_length_over_cap(download: SimpleNamespace) -> None:
     """HEAD Content-Length over 100 MB fails before saving."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -488,7 +489,7 @@ async def test_tc33_content_length_over_cap(download: SimpleNamespace) -> None:
     assert not (download.root / "downloads" / "big.bin").exists()
 
 
-def test_tc34_filename_sanitise() -> None:
+def test_filename_sanitise() -> None:
     """Path traversal and leading dots are stripped from names."""
     assert "/" not in sanitize_filename("../../evil.pdf")
     assert "\\" not in sanitize_filename("..\\evil.pdf")
@@ -497,7 +498,7 @@ def test_tc34_filename_sanitise() -> None:
     assert sanitize_filename("../../evil.pdf") == "evil.pdf"
 
 
-async def test_tc35_default_download_name(download: SimpleNamespace) -> None:
+async def test_default_download_name(download: SimpleNamespace) -> None:
     """Empty path and no disposition falls back to download-YYYYMMDD-HHMMSS."""
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -518,7 +519,7 @@ async def test_tc35_default_download_name(download: SimpleNamespace) -> None:
     assert files[0].name.startswith("download-")
 
 
-async def test_tc36_digest_binds_urls_and_dest(download: SimpleNamespace) -> None:
+async def test_digest_binds_urls_and_dest(download: SimpleNamespace) -> None:
     """Different final URLs produce different digests."""
     from aldwin.core.policy import compute_digest
 
@@ -533,3 +534,52 @@ async def test_tc36_digest_binds_urls_and_dest(download: SimpleNamespace) -> Non
         "url=https://a.example/x\nfinal_url=https://b.example/x\ndest=downloads/a.pdf",
     )
     assert d1 != d2
+
+
+async def test_dest_outside_workspace_never_grantable(
+    download: SimpleNamespace, tmp_path: Path
+) -> None:
+    """Absolute dest outside the workspace asks and is never grantable."""
+    outside = tmp_path / "outside_dir"
+    outside.mkdir()
+    dest = outside / "report.pdf"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        headers = {
+            "Content-Type": "application/pdf",
+            "Content-Disposition": 'attachment; filename="report.pdf"',
+            "Content-Length": "4",
+        }
+        if request.method == "HEAD":
+            return httpx.Response(200, headers=headers, request=request)
+        return httpx.Response(200, headers=headers, content=b"%PDF", request=request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        tool = download.wrap(client)
+        result = await tool.call(
+            {"url": "https://example.com/report.pdf", "dest": str(dest)}
+        )
+    assert result.ok is True
+    assert dest.exists()
+    assert len(download.asks) >= 1
+    assert download.asks[0].grantable is False
+
+
+def test_running_summary_download(download: SimpleNamespace) -> None:
+    """Pending row prefers dest basename, else URL path name."""
+    assert (
+        running_summary(
+            "download_file",
+            {"url": "https://example.com/a.pdf", "dest": "downloads/x.pdf"},
+            download.workspace,
+        )
+        == "Download x.pdf"
+    )
+    assert (
+        running_summary(
+            "download_file",
+            {"url": "https://example.com/report.pdf"},
+            download.workspace,
+        )
+        == "Download report.pdf"
+    )
