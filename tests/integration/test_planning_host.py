@@ -173,6 +173,9 @@ async def test_calculate_no_approval_no_untrusted(
     log_path = home / "logs" / "approvals.jsonl"
     assert log_path.is_file()
     lines = log_path.read_text(encoding="utf-8").strip().splitlines()
-    assert any('"tool": "calculate"' in line or '"name": "calculate"' in line for line in lines) or any(
-        "calculate" in line for line in lines
+    assert any(
+        '"tool": "calculate"' in line
+        or '"name": "calculate"' in line
+        or "calculate" in line
+        for line in lines
     )

@@ -57,6 +57,8 @@ async def test_todo_rejects_empty_list() -> None:
     tool = TodoTool()
     with pytest.raises(ToolCallError, match="items is empty"):
         await tool.forward([])
+    with pytest.raises(ToolCallError, match="items is empty"):
+        await tool.forward("not-a-list")  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -86,9 +88,7 @@ async def test_todo_rejects_unknown_status() -> None:
     tool = TodoTool()
     with pytest.raises(
         ToolCallError,
-        match=(
-            r"item 1: status must be pending, in_progress, done or dropped"
-        ),
+        match=(r"item 1: status must be pending, in_progress, done or dropped"),
     ):
         await tool.forward([{"text": "A", "status": "running"}])
 

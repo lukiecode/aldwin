@@ -97,6 +97,50 @@ def test_evaluate_rejects_attr_subscript_lambda() -> None:
         evaluate("(lambda: 1)()", today=TODAY)
 
 
+def test_evaluate_edge_cases_and_rejects() -> None:
+    """Cover remaining allow-list and safety branches."""
+    assert evaluate("1240 * 15%", today=TODAY).endswith("= 186")
+    assert evaluate("round(1.234, 2)", today=TODAY).endswith("= 1.23")
+    assert evaluate('weekday("2026-11-30")', today=TODAY).endswith("= Monday")
+    assert evaluate("+5", today=TODAY).endswith("= 5")
+    assert evaluate("1_000 + 240", today=TODAY).endswith("= 1240")
+
+    with pytest.raises(ToolCallError, match="not allowed: expression"):
+        evaluate("1\x00+2", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed: empty"):
+        evaluate("   ", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed: syntax"):
+        evaluate("1+", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed: date"):
+        evaluate('days_until("not-a-date")', today=TODAY)
+    with pytest.raises(ToolCallError, match="number too large"):
+        evaluate("10**200", today=TODAY)
+    with pytest.raises(ToolCallError, match="number too large"):
+        evaluate("(10**6 + 1)**101", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed: round arity"):
+        evaluate("round(1, 2, 3)", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed: min arity"):
+        evaluate("min()", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed: max arity"):
+        evaluate("max()", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed: abs arity"):
+        evaluate("abs(1, 2)", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed: sqrt arity"):
+        evaluate("sqrt()", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed: floor arity"):
+        evaluate("floor(1, 2)", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed: ceil arity"):
+        evaluate("ceil()", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed"):
+        evaluate("{1}", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed"):
+        evaluate("[x for x in [1]]", today=TODAY)
+    with pytest.raises(ToolCallError, match="not allowed"):
+        evaluate("True", today=TODAY)
+
+    assert format_row_summary("no equals sign") == "Calculate no equals sign"
+
+
 def test_calculate_module_has_no_eval() -> None:
     source = Path("src/aldwin/core/tools/calculate.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -111,8 +155,6 @@ def test_format_row_summary_truncates_and_groups() -> None:
     summary = format_row_summary("1000 + 240 = 1240")
     assert summary.startswith("Calculate ")
     assert "1,240" in summary
-    long_expr = "1+" * 40 + "1"
-    full = evaluate(long_expr[:199] if len(long_expr) > 199 else long_expr, today=TODAY)
     # Use a known long normalised form:
     padded = ("1+" * 50) + "1"
     if len(padded) <= 200:

@@ -121,7 +121,7 @@ def test_todo_view_freeze_stops_live_keeps_state() -> None:
     console = create_console(width=80, record=True, file=buf)
     view = TodoView(plain=False, unicode=True)
     # Force non-interactive so apply_event prints instead of starting Live.
-    console.is_interactive = False  # type: ignore[misc]
+    console.is_interactive = False
     view.apply_event(
         TodoUpdatedEvent(
             re="r1",

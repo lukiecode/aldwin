@@ -201,9 +201,7 @@ def _eval_node(node: ast.AST, today: date) -> Any:
         unary_type = type(node.op)
         if unary_type not in _UNARY_OPS:
             raise _not_allowed(f"unary {unary_type.__name__}")
-        return _check_magnitude(
-            _UNARY_OPS[unary_type](_eval_node(node.operand, today))
-        )
+        return _check_magnitude(_UNARY_OPS[unary_type](_eval_node(node.operand, today)))
 
     if isinstance(node, ast.BinOp):
         bin_type = type(node.op)
