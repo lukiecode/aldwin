@@ -186,6 +186,11 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
         description="Exact arithmetic and ISO date maths (no shell).",
         requires_approval=False,
     ),
+    ToolInfo(
+        name="create_skill",
+        description="Create or update a user skill after diff approval.",
+        requires_approval=True,
+    ),
 )
 
 

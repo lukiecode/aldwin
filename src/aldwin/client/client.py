@@ -55,6 +55,10 @@ from aldwin.protocol import (
     HistoryRequest,
     Request,
     SetModelRequest,
+    SkillBodyEvent,
+    SkillsEvent,
+    SkillsListRequest,
+    SkillsShowRequest,
     StopRequest,
     TodoGetRequest,
     TodoUpdatedEvent,
@@ -306,6 +310,58 @@ class AldwinClient:
     def skills_report(self) -> SkillsReport:
         """Return valid and invalid skills report for `/skills`."""
         return get_skills_report(self._home)
+
+    async def skills_list(self) -> SkillsEvent:
+        """Fetch the active skill catalogue from the host."""
+        self._ensure_reader()
+        request = SkillsListRequest()
+        queue: asyncio.Queue[Event | None] = asyncio.Queue()
+        self._queues[request.id] = queue
+        skills_event: SkillsEvent | None = None
+        try:
+            await self._transport.send(request)
+            while True:
+                event = await queue.get()
+                if event is None:
+                    raise ProtocolError(
+                        "Transport closed before `skills.list` completed."
+                    )
+                if isinstance(event, SkillsEvent):
+                    skills_event = event
+                elif isinstance(event, ErrorEvent):
+                    raise ProtocolError(event.message, code=event.code)
+                elif isinstance(event, DoneEvent):
+                    if skills_event is None:
+                        return SkillsEvent(re=request.id)
+                    return skills_event
+        finally:
+            self._queues.pop(request.id, None)
+
+    async def skills_show(self, name: str) -> SkillBodyEvent:
+        """Fetch the effective body of one skill from the host."""
+        self._ensure_reader()
+        request = SkillsShowRequest(name=name)
+        queue: asyncio.Queue[Event | None] = asyncio.Queue()
+        self._queues[request.id] = queue
+        body_event: SkillBodyEvent | None = None
+        try:
+            await self._transport.send(request)
+            while True:
+                event = await queue.get()
+                if event is None:
+                    raise ProtocolError(
+                        "Transport closed before `skills.show` completed."
+                    )
+                if isinstance(event, SkillBodyEvent):
+                    body_event = event
+                elif isinstance(event, ErrorEvent):
+                    raise ProtocolError(event.message, code=event.code)
+                elif isinstance(event, DoneEvent):
+                    if body_event is None:
+                        raise ProtocolError(f"No skill named {name!r}.")
+                    return body_event
+        finally:
+            self._queues.pop(request.id, None)
 
     def tools_summary(self) -> list[ToolInfo]:
         """Return built-in tools descriptors for `/tools`."""

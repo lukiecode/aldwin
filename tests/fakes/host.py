@@ -23,6 +23,9 @@ from aldwin.protocol import (
     ErrorEvent,
     Event,
     HistoryEvent,
+    SkillBodyEvent,
+    SkillCatalogItem,
+    SkillsEvent,
     TodoUpdatedEvent,
 )
 
@@ -98,6 +101,13 @@ class FakeHost:
                 SkillSummary(
                     name="using-aldwin",
                     description="How to use Aldwin's memory, persona, and tools.",
+                    source="default",
+                ),
+                SkillSummary(
+                    name="broken-skill",
+                    description="",
+                    source="user",
+                    error="missing description",
                 ),
             ),
             invalid=(
@@ -108,6 +118,9 @@ class FakeHost:
                 ),
             ),
         )
+        self.custom_skill_bodies: dict[str, str] = {
+            "using-aldwin": "# Using Aldwin\n\nIdentity and commands.\n",
+        }
         self.custom_tools: list[ToolInfo] = [
             ToolInfo(
                 name="web_search",
@@ -232,6 +245,32 @@ class FakeHost:
 
     def skills_report(self) -> SkillsReport:
         return self.custom_skills
+
+    async def skills_list(self) -> SkillsEvent:
+        self.requests.append(("skills.list",))
+        items = tuple(
+            SkillCatalogItem(
+                name=s.name,
+                description=s.description,
+                source=s.source,
+                tools_removed=s.tools_removed,
+                error=s.error,
+            )
+            for s in self.custom_skills.valid
+        )
+        return SkillsEvent(re="req_skills", items=list(items))
+
+    async def skills_show(self, name: str) -> SkillBodyEvent:
+        from aldwin.client.client import ProtocolError
+
+        self.requests.append(("skills.show", name))
+        if name not in self.custom_skill_bodies:
+            raise ProtocolError(f"No skill named {name!r}.")
+        return SkillBodyEvent(
+            re="req_skill_body",
+            name=name,
+            body=self.custom_skill_bodies[name],
+        )
 
     def tools_summary(self) -> list[ToolInfo]:
         return list(self.custom_tools)

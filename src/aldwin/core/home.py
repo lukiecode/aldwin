@@ -32,7 +32,6 @@ STARTER_ASSETS: Final[tuple[tuple[str, str], ...]] = (
     ("config.yaml", "config.yaml"),
     ("persona.md", "persona.md"),
     ("profile.md", "memory/profile.md"),
-    ("skills/using-aldwin/SKILL.md", "skills/using-aldwin/SKILL.md"),
 )
 
 BASE_INSTRUCTIONS_ASSET: Final[str] = "instructions.md"
@@ -152,6 +151,10 @@ def ensure_home(home: Path | None = None) -> bool:
     secrets_path = root / "secrets.yaml"
     if secrets_path.exists():
         ensure_permissions(secrets_path, FILE_MODE)
+
+    from aldwin.core.skills import migrate_001_starter_skill
+
+    migrate_001_starter_skill(root)
 
     cleanup_old_tmp_files(root / "tmp")
     return created_root

@@ -4,6 +4,24 @@ All notable changes to Aldwin are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Nine packaged default skills** (`using-aldwin`, `files`, `markdown-notes`, `documents`, `making-documents`, `web-research`, `memory`, `terminal`, `skill-creator`) loaded from the install via `importlib.resources`; user skills under `~/.aldwin/skills/<name>/` override by name.
+- **`create_skill` tool** (Diff approval, never session-grantable) to write or update a user skill; host rebuilds the agent after the turn and shows `skills reloaded`.
+- **`aldwin[docs]` optional extra** (`python-docx`, `openpyxl`, `reportlab`) for the `making-documents` skill.
+- **`/skills show <name>`** prints the effective skill body; `/skills` and `aldwin skills` show `name · source · description` with `default` / `user` / `user override` labels.
+
+### Changed
+
+- Default skills are no longer copied into `~/.aldwin` on first run; upgrades improve packaged skills automatically.
+- Skills never load code: a `tools:` frontmatter key is stripped (flagged as `tools removed` for user skills).
+
+### Migration
+
+- An unmodified 0.0.1 starter copy of `~/.aldwin/skills/using-aldwin/` is renamed to `using-aldwin.old-0.0.1/` so the new packaged identity block takes effect. An edited copy is kept as a user override.
+
 ## [0.0.1] - 2026-11-01
 
 First public release of Aldwin: an open-source personal assistant that runs on your own computer, in your terminal, built on [Agentling](https://agentling.dev).

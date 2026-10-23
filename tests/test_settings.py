@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-from agentling import Skill
 from pydantic import SecretStr
 
 from aldwin.core.home import atomic_write, ensure_home
@@ -46,14 +45,18 @@ def test_load_config_missing_file_returns_defaults(aldwin_home: Path) -> None:
 
 
 def test_starter_assets_are_valid(aldwin_home: Path) -> None:
-    """TC-17: Starter config.yaml and starter skill load cleanly out of the box."""
+    """TC-17: Starter config.yaml and packaged default skills load cleanly."""
+    from aldwin.core.skills import build_catalogue
+
     ensure_home(aldwin_home)
     cfg = load_config(aldwin_home)
     assert cfg == AldwinConfig()
 
-    skill = Skill.from_path(aldwin_home / "skills" / "using-aldwin")
-    assert skill.name == "using-aldwin"
-    assert "Aldwin" in skill.instructions
+    cat = build_catalogue(aldwin_home, version="0.0.2", model=cfg.model)
+    ua = next(e for e in cat if e.name == "using-aldwin")
+    assert ua.skill is not None
+    assert "Aldwin" in ua.body
+    assert not (aldwin_home / "skills" / "using-aldwin").exists()
 
     profile_raw = (aldwin_home / "memory" / "profile.md").read_text(encoding="utf-8")
     stripped_profile = re.sub(r"<!--.*?-->", "", profile_raw, flags=re.DOTALL).strip()

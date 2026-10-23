@@ -100,6 +100,7 @@ def test_list_builtin_tools_metadata() -> None:
         "download_file",
         "todo",
         "calculate",
+        "create_skill",
     ]
 
     by_name: dict[str, ToolInfo] = {item.name: item for item in items}

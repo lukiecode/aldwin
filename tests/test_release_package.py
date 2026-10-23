@@ -15,7 +15,6 @@ from typing import Any
 
 import pytest
 import yaml
-from agentling import Skill
 from typer.testing import CliRunner
 
 import aldwin
@@ -32,7 +31,9 @@ EXPECTED_WHEEL_ASSETS = (
     "aldwin/core/assets/instructions.md",
     "aldwin/core/assets/persona.md",
     "aldwin/core/assets/profile.md",
-    "aldwin/core/assets/skills/using-aldwin/SKILL.md",
+    "aldwin/core/assets/skills/using-aldwin/SKILL.md.tmpl",
+    "aldwin/core/assets/skills/files/SKILL.md",
+    "aldwin/core/assets/skills/terminal/SKILL.md",
 )
 
 FORBIDDEN_ARCHIVE_PREFIXES = (
@@ -190,8 +191,12 @@ def test_wheel_assets_loadable_from_unpacked_package(
     assert isinstance(config_data, dict)
     assert config_data.get("model") == "gpt-4o"
 
-    starter_skill = Skill.from_path(assets_root / "skills" / "using-aldwin")
-    assert starter_skill.name == "using-aldwin"
+    tmpl = (assets_root / "skills" / "using-aldwin" / "SKILL.md.tmpl").read_text(
+        encoding="utf-8"
+    )
+    assert "name: using-aldwin" in tmpl
+    assert "$version" in tmpl and "$model" in tmpl
+    assert (assets_root / "skills" / "files" / "SKILL.md").is_file()
 
 
 def test_readme_uses_absolute_https_image_urls_and_balanced_fences() -> None:

@@ -133,6 +133,25 @@ def main(
         raise typer.Exit(code=exit_code)
 
 
+@app.command("skills")
+def skills_cmd() -> None:
+    """List default and user skills with source labels."""
+    from aldwin.cli.commands import render_skills_report
+    from aldwin.cli.theme import create_console
+    from aldwin.client import get_skills_report
+
+    client = _load_client()
+    try:
+        result = client.bootstrap(plain=True, debug=False)
+    except (client.PlatformNotSupportedError, client.ClientBootstrapError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+
+    report = get_skills_report(result.home)
+    console = create_console(plain=True)
+    render_skills_report(report, console)
+
+
 @app.command()
 def setup(
     plain: bool = typer.Option(

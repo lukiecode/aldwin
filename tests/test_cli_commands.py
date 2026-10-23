@@ -233,10 +233,82 @@ async def test_slash_completer_and_inspect_commands() -> None:
     assert "calm and direct assistant" in text
     assert "~/.aldwin/memory/profile.md" in text
     assert "Fola prefers short answers" in text
-    assert "• using-aldwin  How to use Aldwin's memory, persona, and tools." in text
-    assert "✗ broken-skill (invalid: missing description)" in text
+    assert "using-aldwin · default ·" in text
+    assert "broken-skill · error: missing description" in text
+    assert "Add or edit skills in ~/.aldwin/skills/" in text
     assert "web_search" in text
     assert "run_command" in text and "always asks y/n" in text
+    assert ("skills.list",) in client.requests
+
+
+async def test_skills_show_prints_body() -> None:
+    """`/skills show <name>` prints the effective body from the host."""
+    client = FakeClient()
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+
+    await handle_slash_command(
+        "/skills show using-aldwin",
+        client=client,
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    text = console.export_text()
+    assert "Identity and commands" in text
+    assert ("skills.show", "using-aldwin") in client.requests
+
+    await handle_slash_command(
+        "/skills show missing-skill",
+        client=client,
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    assert "No skill named" in console.export_text()
+
+
+async def test_skills_list_flags_override_and_tools_removed() -> None:
+    """`/skills` renders override and tools-removed flags from skills.list."""
+    from aldwin.client import SkillsReport, SkillSummary
+
+    client = FakeClient()
+    client.custom_skills = SkillsReport(
+        valid=(
+            SkillSummary(
+                name="terminal",
+                description="Custom terminal habits for this user.",
+                source="user override",
+            ),
+            SkillSummary(
+                name="fancy",
+                description="Downloaded skill with code loading stripped.",
+                source="user",
+                tools_removed=True,
+            ),
+            SkillSummary(
+                name="broken",
+                description="",
+                source="user",
+                error="missing description",
+            ),
+        ),
+        invalid=(),
+    )
+    buf = io.StringIO()
+    console = create_console(plain=True, width=80, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+
+    await handle_slash_command(
+        "/skills",
+        client=client,
+        renderer=renderer,
+        prompt_line=_noop_prompt,
+    )
+    text = console.export_text()
+    assert "terminal · user override ·" in text
+    assert "fancy · user · tools removed ·" in text
+    assert "broken · error: missing description" in text
+    assert "Add or edit skills in ~/.aldwin/skills/" in text
 
 
 async def test_workspace_command_shows_and_switches_root_and_clears_grants(
