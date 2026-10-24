@@ -4,8 +4,8 @@ version = "0.0.1"
 description = "An open-source personal assistant that runs on your own computer, built on Agentling."
 readme = "README.md"
 requires-python = ">=3.11"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 authors = [
     { name = "Folarin Akinloye", email = "me@folarin.dev" }
 ]
@@ -70,6 +70,7 @@ only-include = [
     "src/aldwin",
     "README.md",
     "LICENSE",
+    "NOTICE",
     "CHANGELOG.md",
     "pyproject.toml",
 ]
@@ -77,9 +78,10 @@ only-include = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-m 'not live and not perf'"
+addopts = "-m 'not live and not perf and not e2e'"
 markers = [
     "live: calls the real OpenAI and Tavily APIs (run by hand)",
+    "e2e: drives the installed aldwin binary via pexpect against OpenAI",
     "uninitialized_home: do not call ensure_home() in the autouse aldwin_home fixture",
     "perf: performance budget benchmarks (run by hand or on CI)",
 ]
@@ -107,6 +109,8 @@ module = [
     "openpyxl.*",
     "bs4.*",
     "markdownify.*",
+    "pexpect.*",
+    "ptyprocess.*",
 ]
 ignore_missing_imports = true
 
@@ -116,6 +120,7 @@ dev = [
     "pytest-asyncio>=0.25.0",
     "pytest-cov>=6.0.0",
     "hypothesis>=6.100.0",
+    "pexpect>=4.9.0",
     "types-PyYAML>=6.0",
     "ruff>=0.9.0",
     "mypy>=1.14.0",
