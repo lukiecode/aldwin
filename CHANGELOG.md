@@ -55,7 +55,7 @@ Aldwin now works with your files and documents, knows good habits out of the box
 
 ### Sizes
 
-- Wheel: ~0.23 MB. Installed (no extras): ~116 MB on macOS arm64, within the 120 MB budget (Linux x86_64 to be confirmed before publish). With `aldwin[office]`: ~131 MB.
+- Wheel: ~0.23 MB. Installed (no extras): ~116 MB on macOS arm64; confirmed within the 120 MB budget on Linux x86_64 (Python 3.11, 3.12, and 3.13) in CI. With `aldwin[office]`: ~131 MB on macOS arm64.
 
 ## [0.0.1] - 2026-11-01
 
