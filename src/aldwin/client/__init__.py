@@ -31,6 +31,7 @@ from aldwin.host.in_process import (
     get_persona_text,
     get_skills_report,
     list_available_models,
+    mark_whats_new_seen,
     mask_secret,
     open_in_process_client,
     pop_profile_truncation_warning,
@@ -40,6 +41,7 @@ from aldwin.host.in_process import (
     save_setup,
     update_available_nudge,
     verify_active_openai_key,
+    whats_new_due,
 )
 
 if TYPE_CHECKING:
@@ -94,6 +96,7 @@ __all__ = [
     "get_persona_text",
     "get_skills_report",
     "list_available_models",
+    "mark_whats_new_seen",
     "mask_secret",
     "open_in_process_client",
     "pop_profile_truncation_warning",
@@ -102,4 +105,5 @@ __all__ = [
     "sanitize_display_text",
     "save_setup",
     "update_available_nudge",
+    "whats_new_due",
 ]

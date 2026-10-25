@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from aldwin import __version__
+from aldwin import __version__, format_version_string
 
 if TYPE_CHECKING:
     from aldwin.client import BootstrapResult
@@ -40,7 +40,7 @@ def _is_interactive_tty() -> bool:
 
 def _version_callback(value: bool) -> None:
     if value:
-        typer.echo(f"aldwin {__version__}")
+        typer.echo(format_version_string())
         raise typer.Exit(code=0)
 
 

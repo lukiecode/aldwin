@@ -34,6 +34,7 @@ from aldwin.host.in_process import (
     get_persona_text,
     get_skills_report,
     list_available_models,
+    mark_whats_new_seen,
     mask_secret,
     open_in_process_client,
     pop_profile_truncation_warning,
@@ -42,6 +43,7 @@ from aldwin.host.in_process import (
     save_setup,
     update_available_nudge,
     verify_active_openai_key,
+    whats_new_due,
 )
 from aldwin.protocol import (
     MIN_SUPPORTED_VERSION,
@@ -425,10 +427,12 @@ __all__ = [
     "get_persona_text",
     "get_skills_report",
     "list_available_models",
+    "mark_whats_new_seen",
     "mask_secret",
     "open_in_process_client",
     "pop_profile_truncation_warning",
     "purge_home_data",
     "save_setup",
     "update_available_nudge",
+    "whats_new_due",
 ]
