@@ -4,6 +4,12 @@ All notable changes to Aldwin are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `/tools` labelled every tool that needs approval "(always asks y/n)". That was wrong for `edit_file` and `write_file`, which can be allowed per file for the session with `a`, and for the diff-approved tools, which don't ask y/n. Each tool now shows a note that matches its approval tier. `run_command` is described as running in the workspace, not the launch folder.
+
 ## [0.0.2.1] - 2026-10-25
 
 ### Fixed
