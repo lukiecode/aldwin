@@ -4,6 +4,12 @@ All notable changes to Aldwin are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Some invalid `config.yaml` values produced garbled errors such as `'check_for_updates' must be Input should be a valid boolean…`. `check_for_updates` and `last_seen_version` now have proper messages, and a bad item in `run_command.env_allow` is named by its position (`run_command.env_allow[0]`).
+
 ## [0.0.2.1] - 2026-10-25
 
 ### Fixed
