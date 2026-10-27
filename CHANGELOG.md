@@ -4,6 +4,12 @@ All notable changes to Aldwin are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Running `aldwin` (or `aldwin skills`) from a folder that had been deleted after you `cd`-ed into it crashed with a `FileNotFoundError` traceback. Aldwin now falls back to `~/aldwin_workspace`, the same as when it is launched from the home directory.
+
 ## [0.0.2.1] - 2026-10-25
 
 ### Fixed
