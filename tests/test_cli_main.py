@@ -278,6 +278,35 @@ async def test_launch_interactive_session_onboarding_and_chat(
     assert seen_skip_welcome == [False, True]
 
 
+async def test_launch_interactive_session_uses_configured_theme(
+    aldwin_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`theme: light` in config.yaml reaches the console handed to `run_chat`."""
+    import aldwin.cli.chat_screen as chat_mod
+    from aldwin.cli.theme import THEME_LIGHT
+    from aldwin.client import bootstrap, save_setup
+
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    save_setup(openai_api_key="sk-proj-ready1234", home=aldwin_home)
+    (aldwin_home / "config.yaml").write_text("theme: light\n", encoding="utf-8")
+    boot = bootstrap(plain=False)
+    seen: list[object] = []
+
+    async def fake_run_chat(*_args: object, **kwargs: object) -> int:
+        seen.append(kwargs["console"])
+        return 0
+
+    monkeypatch.setattr(chat_mod, "run_chat", fake_run_chat)
+    assert await cli_main._launch_interactive_session(boot, debug=False) == 0
+
+    from rich.console import Console
+
+    console = seen[0]
+    assert isinstance(console, Console)
+    assert console.get_style("muted") == THEME_LIGHT.styles["muted"]
+
+
 def test_cli_help_has_no_internal_ticket_tags() -> None:
     """`aldwin --help` describes `setup` and `uninstall` without ``."""
     res = runner.invoke(app, ["--help"])

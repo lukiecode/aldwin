@@ -702,7 +702,7 @@ async def run_chat(
 ) -> int:
     """Run the main Aldwin interactive chat loop."""
     _ = debug
-    active_console = console or create_console(plain=boot.plain)
+    active_console = console or create_console(plain=boot.plain, theme=boot.theme)
     renderer = ChatRenderer(active_console, plain=boot.plain)
 
     if client is None and input_dev is None and not sys.stdin.isatty():

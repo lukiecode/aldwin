@@ -55,7 +55,7 @@ async def _launch_interactive_session(
     from aldwin.cli.theme import create_console
     from aldwin.client import get_onboarding_status
 
-    console = create_console(plain=result.plain)
+    console = create_console(plain=result.plain, theme=result.theme)
     had_env_key = get_onboarding_status(result.home).openai_source == "env"
     skip_welcome = False
     if needs_onboarding(result):
@@ -171,7 +171,7 @@ def setup(
     from aldwin.cli.onboarding import run_setup
     from aldwin.cli.theme import create_console
 
-    console = create_console(plain=result.plain)
+    console = create_console(plain=result.plain, theme=result.theme)
     ok = asyncio.run(run_setup(result, console))
     if not ok:
         raise typer.Exit(code=1)
