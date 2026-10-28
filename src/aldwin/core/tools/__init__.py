@@ -94,6 +94,14 @@ class ToolInfo:
     name: str
     description: str
     requires_approval: bool
+    approval_note: str = ""
+
+
+# `/tools` notes; `test_builtin_tools` checks each matches `policy.REGISTRY`.
+APPROVAL_NOTE_ASK: Final[str] = "always asks y/n"
+APPROVAL_NOTE_DIFF: Final[str] = "asks every time"
+APPROVAL_NOTE_DIFF_GRANTABLE: Final[str] = "a = allow this file for the session"
+APPROVAL_NOTE_REMEMBER: Final[str] = "replace= shows a diff"
 
 
 _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
@@ -109,8 +117,9 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
     ),
     ToolInfo(
         name="run_command",
-        description="Run a shell command in the launch folder after y/n approval.",
+        description="Run a shell command in the workspace after y/n approval.",
         requires_approval=True,
+        approval_note=APPROVAL_NOTE_ASK,
     ),
     ToolInfo(
         name="remember",
@@ -118,6 +127,7 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
             "Save a short durable fact, or update one in place with replace=."
         ),
         requires_approval=False,
+        approval_note=APPROVAL_NOTE_REMEMBER,
     ),
     ToolInfo(
         name="recall",
@@ -128,11 +138,13 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
         name="forget",
         description="Delete a saved memory note after diff approval.",
         requires_approval=True,
+        approval_note=APPROVAL_NOTE_DIFF,
     ),
     ToolInfo(
         name="set_persona",
         description="Replace Aldwin's persona.md after y/n approval.",
         requires_approval=True,
+        approval_note=APPROVAL_NOTE_DIFF,
     ),
     ToolInfo(
         name="list_dir",
@@ -158,11 +170,13 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
         name="edit_file",
         description="Replace a unique exact string in a file after diff approval.",
         requires_approval=True,
+        approval_note=APPROVAL_NOTE_DIFF_GRANTABLE,
     ),
     ToolInfo(
         name="write_file",
         description="Create or overwrite a text file after diff approval.",
         requires_approval=True,
+        approval_note=APPROVAL_NOTE_DIFF_GRANTABLE,
     ),
     ToolInfo(
         name="read_document",
@@ -175,6 +189,7 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
         name="download_file",
         description="Download a public URL into the workspace after y/n approval.",
         requires_approval=True,
+        approval_note=APPROVAL_NOTE_ASK,
     ),
     ToolInfo(
         name="todo",
@@ -190,6 +205,7 @@ _BUILTIN_TOOL_CATALOG: Final[tuple[ToolInfo, ...]] = (
         name="create_skill",
         description="Create or update a user skill after diff approval.",
         requires_approval=True,
+        approval_note=APPROVAL_NOTE_DIFF,
     ),
 )
 

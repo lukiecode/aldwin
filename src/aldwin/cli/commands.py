@@ -375,7 +375,7 @@ def _render_tools(client: SlashCommandClient, renderer: ChatRenderer) -> None:
     for tool_info in tools:
         if tool_info.name == "set_persona":
             continue
-        suffix = " (always asks y/n)" if tool_info.requires_approval else ""
+        suffix = f" ({tool_info.approval_note})" if tool_info.approval_note else ""
         grid.add_row(f"  • {tool_info.name}", f"{tool_info.description}{suffix}")
     console.print(grid)
 
