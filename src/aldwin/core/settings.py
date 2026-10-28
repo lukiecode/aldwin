@@ -34,6 +34,8 @@ KeySource = Literal["env", "file", "missing"]
 _EXPECTED_FIELD_TYPES: Final[dict[str, str]] = {
     "model": "a non-empty string",
     "theme": "'auto', 'dark', 'light', 'colour_blind', or 'plain'",
+    "last_seen_version": "a version string such as '0.0.2'",
+    "check_for_updates": "true or false",
     "limits": "a mapping of limit settings",
     "limits.context_exchanges": "an integer >= 1",
     "limits.profile_chars": "an integer >= 100",
@@ -43,6 +45,7 @@ _EXPECTED_FIELD_TYPES: Final[dict[str, str]] = {
     "limits.max_steps": "an integer >= 1",
     "run_command": "a mapping of run_command settings",
     "run_command.env_allow": "a list of environment variable names",
+    "run_command.env_allow.*": "an environment variable name (a string)",
     "openai_api_key": "a string API key",
     "tavily_api_key": "a string API key",
 }
@@ -51,6 +54,26 @@ _SECRET_ENV_ALLOW_RE: Final[re.Pattern[str]] = re.compile(
     r"KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL",
     re.IGNORECASE,
 )
+
+
+def _describe_error_location(
+    loc: tuple[int | str, ...],
+) -> tuple[str, str | None]:
+    """Return a display name and `_EXPECTED_FIELD_TYPES` entry for `loc`.
+
+    List indices become ``[n]`` in the name and ``*`` in the lookup key, so
+    ``("run_command", "env_allow", 0)`` reads as ``run_command.env_allow[0]``.
+    """
+    name = ""
+    key_parts: list[str] = []
+    for part in loc:
+        if isinstance(part, int):
+            name += f"[{part}]"
+            key_parts.append("*")
+        else:
+            name = f"{name}.{part}" if name else str(part)
+            key_parts.append(str(part))
+    return name or "<root>", _EXPECTED_FIELD_TYPES.get(".".join(key_parts))
 
 
 class ConfigError(Exception):
@@ -333,12 +356,13 @@ def load_config(home: Path | None = None) -> AldwinConfig:
         cfg = AldwinConfig.model_validate(parsed)
     except ValidationError as exc:
         first = exc.errors()[0]
-        loc = ".".join(str(part) for part in first.get("loc", ())) or "<root>"
-        expected = _EXPECTED_FIELD_TYPES.get(loc, first.get("msg", "a valid value"))
+        field_name, expected = _describe_error_location(tuple(first.get("loc", ())))
+        # Unmapped fields keep pydantic's text as detail so the sentence still reads.
         raise ConfigError(
             file=config_path,
-            field=loc,
-            expected=expected,
+            field=field_name,
+            expected=expected or "a valid value",
+            detail="" if expected else str(first.get("msg", "")),
         ) from None
 
     if cfg.run_command.env_allow:

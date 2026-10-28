@@ -205,6 +205,18 @@ def test_bootstrap_resolves_plain_mode_from_flag_env_and_config(
     assert bootstrap(plain=False).plain is True
 
 
+def test_bootstrap_reports_configured_theme(
+    aldwin_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """bootstrap() carries `theme` from config.yaml so doors can style the console."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    assert bootstrap(plain=False).theme == "dark"
+
+    for theme in ("light", "colour_blind"):
+        atomic_write(aldwin_home / "config.yaml", f"theme: {theme}\n")
+        assert bootstrap(plain=False).theme == theme
+
+
 def test_bootstrap_from_user_home_falls_back_to_aldwin_workspace(
     aldwin_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
