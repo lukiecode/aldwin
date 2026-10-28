@@ -425,3 +425,33 @@ async def test_tc44_verbose_help_readme(aldwin_home: Path) -> None:
     assert "/workspace" in slash
     after = config.read_bytes() if config.is_file() else b""
     assert after == before
+
+
+async def test_tools_command_labels_follow_approval_tier() -> None:
+    """`/tools` shows per-tier notes, not "always asks y/n" for every approval tool."""
+    from aldwin.client import get_builtin_tools
+
+    client = FakeClient()
+    client.custom_tools = get_builtin_tools()
+    buf = io.StringIO()
+    console = create_console(plain=True, width=200, record=True, file=buf)
+    renderer = ChatRenderer(console, plain=True)
+
+    await handle_slash_command(
+        "/tools", client=client, renderer=renderer, prompt_line=_noop_prompt
+    )
+
+    lines = {
+        line.split()[1]: line
+        for line in console.export_text().splitlines()
+        if line.strip().startswith("•")
+    }
+    assert "(always asks y/n)" in lines["run_command"]
+    assert "(always asks y/n)" in lines["download_file"]
+    assert "(a = allow this file for the session)" in lines["edit_file"]
+    assert "(a = allow this file for the session)" in lines["write_file"]
+    assert "(asks every time)" in lines["forget"]
+    assert "(asks every time)" in lines["create_skill"]
+    assert "(replace= shows a diff)" in lines["remember"]
+    assert "(" not in lines["read_file"]
+    assert "always asks" not in lines["edit_file"]

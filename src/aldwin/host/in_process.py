@@ -342,6 +342,7 @@ class BootstrapResult:
     plain: bool
     workspace: Path = field(default_factory=lambda: Path.cwd().resolve())
     display_workspace: str = ""
+    theme: str = "dark"
 
     def __post_init__(self) -> None:
         if not self.display_workspace:
@@ -475,6 +476,7 @@ def bootstrap_host(
         plain=effective_plain,
         workspace=ws_root,
         display_workspace=ws_display,
+        theme=config.theme,
     )
 
 

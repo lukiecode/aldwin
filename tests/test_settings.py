@@ -88,6 +88,54 @@ def test_load_config_invalid_value_raises_config_error(aldwin_home: Path) -> Non
     assert "restore defaults" in message
 
 
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("check_for_updates: maybe\n", "'check_for_updates' must be true or false."),
+        (
+            "last_seen_version: [1]\n",
+            "'last_seen_version' must be a version string such as '0.0.2'.",
+        ),
+        (
+            "run_command:\n  env_allow: [1]\n",
+            "'run_command.env_allow[0]' must be an environment variable name "
+            "(a string).",
+        ),
+    ],
+)
+def test_load_config_error_reads_as_a_sentence(
+    aldwin_home: Path, body: str, expected: str
+) -> None:
+    """Every config field gets a "must be ..." phrase, not pydantic's raw text."""
+    atomic_write(aldwin_home / "config.yaml", body)
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(aldwin_home)
+
+    message = str(exc_info.value)
+    assert expected in message
+    assert "Input should be" not in message
+
+
+def test_load_config_error_for_unmapped_field_keeps_detail(
+    aldwin_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A field missing from the expected-types map still yields a readable error."""
+    import aldwin.core.settings as settings_mod
+
+    trimmed = dict(settings_mod._EXPECTED_FIELD_TYPES)
+    del trimmed["check_for_updates"]
+    monkeypatch.setattr(settings_mod, "_EXPECTED_FIELD_TYPES", trimmed)
+    atomic_write(aldwin_home / "config.yaml", "check_for_updates: maybe\n")
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config(aldwin_home)
+
+    message = str(exc_info.value)
+    assert "'check_for_updates' must be a valid value (Input should be" in message
+    assert "must be Input should be" not in message
+
+
 def test_load_config_unknown_keys_logged_and_ignored(
     aldwin_home: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

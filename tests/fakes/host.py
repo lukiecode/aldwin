@@ -137,6 +137,7 @@ class FakeHost:
                 name="run_command",
                 description="Run a shell command after y/n approval.",
                 requires_approval=True,
+                approval_note="always asks y/n",
             ),
             ToolInfo(
                 name="remember",

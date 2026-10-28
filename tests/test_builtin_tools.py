@@ -127,6 +127,27 @@ def test_list_builtin_tools_metadata() -> None:
     assert by_name["calculate"].requires_approval is False
 
 
+def test_tools_approval_notes_match_policy_registry() -> None:
+    """Each `/tools` approval note describes the tool's tier in `policy.REGISTRY`."""
+    import aldwin.core.tools as tools_mod
+    from aldwin.core.policy import REGISTRY
+
+    for item in list_builtin_tools():
+        policy = REGISTRY[item.name]
+        if callable(policy.tier):
+            expected = tools_mod.APPROVAL_NOTE_REMEMBER
+        elif policy.tier == "ask":
+            expected = tools_mod.APPROVAL_NOTE_ASK
+        elif policy.tier == "diff" and policy.never_grant is None:
+            expected = tools_mod.APPROVAL_NOTE_DIFF_GRANTABLE
+        elif policy.tier == "diff":
+            expected = tools_mod.APPROVAL_NOTE_DIFF
+        else:
+            expected = ""
+        assert item.approval_note == expected, item.name
+        assert item.requires_approval is (policy.tier in ("ask", "diff")), item.name
+
+
 def test_tool_output_and_summarize_tool_result_contract() -> None:
     """`ToolOutput` preserves `.summary` and `.ok` across `str()` and `+`."""
     out = ToolOutput("full body text", summary="3 results", ok=True)
